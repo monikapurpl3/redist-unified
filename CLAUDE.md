@@ -113,8 +113,24 @@ The client never carries on and reports success.
 - Publishing anything (a release, the manifest) needs the maintainer's explicit
   yes, every time.
 
+## Licence
+
+The project is **GPL-3.0-or-later**. Copyleft is compatible with the
+redistributables, for two reasons:
+
+- The client never contains or links the Microsoft installers. It downloads
+  them and runs them as separate programs.
+- The static MSVC CRT inside `redist.exe` is a "System Library" under GPLv3,
+  because it comes with the compiler. GPLv2's equivalent exception does not
+  cover a statically linked runtime, so keep the licence on v3 or later.
+
+AGPL's network clause would do nothing for a desktop installer.
+
+Dependencies must be GPLv3-compatible. MIT, Apache-2.0, BSD, ISC, Zlib,
+MPL-2.0 and Unicode-3.0 are fine.
+
+## Open questions
+
 The open questions are the maintainer's to decide. Do not settle them in code.
-They are the product name, which out-of-support .NET majors to
-include, console or UI for v1, whether to publish the offline pack, and the
-licence (MIT or Apache-2.0). Because the licence is undecided, the crates have
-no `license` field yet.
+They are the product name, which out-of-support .NET majors to include, console
+or UI for v1, and whether to publish the offline pack.

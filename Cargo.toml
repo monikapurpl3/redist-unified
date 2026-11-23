@@ -6,6 +6,8 @@ members = ["crates/redist-core", "crates/redist"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.100"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/monikapurpl3/redist-unified"
 publish = false
 
 [profile.release]
