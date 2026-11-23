@@ -24,6 +24,19 @@ pub enum Detect {
     Any { rules: RuleList },
 }
 
+impl Detect {
+    /// Whether this rule or any rule inside it is a `dotnet_runtime` rule.
+    pub(super) fn uses_dotnet(&self) -> bool {
+        match self {
+            Detect::DotnetRuntime(_) => true,
+            Detect::All { rules } | Detect::Any { rules } => {
+                rules.as_slice().iter().any(Detect::uses_dotnet)
+            }
+            _ => false,
+        }
+    }
+}
+
 /// The rules of `all` or `any`. Never empty.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "Vec<Detect>")]
@@ -92,6 +105,13 @@ impl TryFrom<RawRegistryRule> for RegistryRule {
                 );
             }
         };
+        if raw
+            .value
+            .as_deref()
+            .is_some_and(|name| name.chars().any(char::is_control))
+        {
+            return Err("a registry value name cannot have control characters".into());
+        }
         if check != RegistryCheck::Exists && raw.value.is_none() {
             return Err(
                 "a registry rule with min, equals or min_version needs a value name".into(),
@@ -182,7 +202,7 @@ impl TryFrom<String> for RegistryKey {
 }
 
 /// Which registry view a rule reads, whatever the client's own bitness.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
 pub enum RegistryView {
     /// `"32"`: what 32-bit programs see (`WOW6432Node` on 64-bit Windows).
     #[serde(rename = "32")]

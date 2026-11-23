@@ -1,35 +1,14 @@
 //! Manifest parsing, against `data/manifest.json` and edited copies of it.
-//!
-//! The fixture's URLs and hashes are dummies. Its silent arguments and
-//! detection values only exercise the schema: none of them has been checked
-//! against the real installers, so do not copy them into a real manifest.
 
+mod common;
+
+use common::{DIRECTX, DOTNET, NETFX, VC_X64, VC_X86, component, fixture, parse_edited, remove};
 use redist_core::manifest::{
     Arch, Detect, DotnetFramework, ExitOutcome, Installer, KnownFolder, Manifest, ManifestError,
     RegistryCheck, RegistryData, RegistryRule, RegistryView,
 };
 use redist_core::version::Version;
 use serde_json::{Value, json};
-
-const FIXTURE: &str = include_str!("data/manifest.json");
-
-// Component positions in the fixture.
-const VC_X64: usize = 0;
-const VC_X86: usize = 1;
-const DIRECTX: usize = 2;
-const DOTNET: usize = 3;
-const NETFX: usize = 4;
-
-fn fixture() -> Manifest {
-    Manifest::parse(FIXTURE.as_bytes()).unwrap()
-}
-
-/// Parses the fixture after `edit` has changed it.
-fn parse_edited(edit: impl FnOnce(&mut Value)) -> Result<Manifest, ManifestError> {
-    let mut manifest: Value = serde_json::from_str(FIXTURE).unwrap();
-    edit(&mut manifest);
-    Manifest::parse(&serde_json::to_vec(&manifest).unwrap())
-}
 
 /// Asserts that the fixture is refused after `edit`, with `expected` in the
 /// message.
@@ -47,10 +26,6 @@ fn assert_refused(edit: impl FnOnce(&mut Value), expected: &str) {
     }
 }
 
-fn component(manifest: &mut Value, index: usize) -> &mut Value {
-    &mut manifest["components"][index]
-}
-
 /// The x64 VC++ rule that checks `Bld`.
 fn bld_rule(manifest: &mut Value) -> &mut Value {
     &mut manifest["components"][VC_X64]["detect"]["rules"][1]
@@ -64,10 +39,6 @@ fn parsed_bld_rule(manifest: &Manifest) -> &RegistryRule {
         panic!("expected a registry rule");
     };
     rule
-}
-
-fn remove(object: &mut Value, field: &str) {
-    object.as_object_mut().unwrap().remove(field);
 }
 
 #[test]
@@ -467,6 +438,22 @@ fn other_detection_rules() {
     assert_refused(
         |m| component(m, DOTNET)["detect"]["framework"] = json!("Microsoft.Maui.App"),
         "unknown variant `Microsoft.Maui.App`",
+    );
+    assert_refused(
+        |m| component(m, DOTNET)["arch"] = json!("any"),
+        "a dotnet_runtime rule needs the component's arch",
+    );
+    assert_refused(
+        |m| {
+            component(m, NETFX)["detect"] = json!({"type": "all", "rules": [
+                {"type": "dotnet_runtime", "framework": "Microsoft.NETCore.App", "min": "8.0.0"}
+            ]});
+        },
+        "a dotnet_runtime rule needs the component's arch",
+    );
+    assert_refused(
+        |m| component(m, VC_X64)["detect"]["rules"][1]["value"] = json!("Bld\u{0}"),
+        "a registry value name cannot have control characters",
     );
 
     let command = json!({

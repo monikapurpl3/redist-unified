@@ -10,9 +10,9 @@ part of the design.
 
 ## State of the project
 
-Milestone 1 is the manifest and detection library. The manifest schema and its
-parser are done. Detection (evaluating the rules against a real or fake
-registry and file system) is next.
+Milestone 1, the manifest and detection library, is done. It covers the
+manifest schema and parser, plus detection against a fake machine (tests) and
+against Windows itself. Milestone 2, the CLI installer, is next.
 
 ## Commands
 
@@ -26,6 +26,7 @@ cargo build --release --locked                       # target/release/redist.exe
 cargo test --locked                                  # every crate
 cargo test -p redist-core <name>                     # tests whose name contains <name>
 cargo test -p redist-core --test manifest            # one integration test file
+cargo test -p redist-core --lib windows              # the real Windows backend (read-only)
 cargo clippy --all-targets --locked -- -D warnings
 cargo fmt --check
 ```
@@ -81,9 +82,8 @@ The client never carries on and reports success.
 
 ### Code layout
 
-- `crates/redist-core` is the library: manifest, detection and install logic,
-  with unit tests against fake registries. Milestone 1 is this library, the real
-  product.
+- `crates/redist-core` is the library: manifest, detection and, later, install
+  logic. Milestone 1 is this library, the real product.
 - `crates/redist` is the thin binary (CLI, later the UI) that builds
   `redist.exe`. It does not depend on `redist-core` yet; add the path
   dependency when it first calls the library.
@@ -91,8 +91,14 @@ The client never carries on and reports success.
   working names and have not been renamed to match.
 - `.cargo/config.toml` sets `+crt-static` for `x86_64-pc-windows-msvc` (the
   first target) and `aarch64-pc-windows-msvc` (later).
-- The `requireAdministrator` manifest is not embedded yet. It comes with the CLI
-  installer in milestone 2.
+- **The exe needs an application manifest** with `requireAdministrator` and the
+  Windows 10/11 `supportedOS` GUID. It comes with the CLI in milestone 2.
+  - Without `supportedOS`, Windows reports its own files (`kernel32.dll`) as
+    version 6.2. Runtime DLLs are not affected.
+  - `crates/redist-core/build.rs` embeds `windows-compat.manifest` (the
+    compatibility section only, `asInvoker`) in the library's tests and
+    examples. That way they see Windows as the client will, and never need
+    elevation.
 - `Cargo.lock` is committed, and every release build uses `--locked`.
 - `.gitattributes` forces LF line endings.
 
@@ -118,7 +124,7 @@ The schema lives in `crates/redist-core/src/manifest.rs` and the modules under
 - **Registry rules:**
   - They are `HKLM` only.
   - They pick a `view` (`"32"` or `"64"`), and a key that names `WOW6432Node`
-    is refused. This works on 32-bit Windows too.
+    is refused.
   - They take at most one of `min`, `equals` and `min_version`. With none, they
     check presence.
 - **Paths:**
@@ -146,6 +152,47 @@ The schema lives in `crates/redist-core/src/manifest.rs` and the modules under
 - **The fixture is not real data:** its URLs and hashes are dummies, and its
   silent arguments and detection values have not been checked against the real
   installers.
+- A `dotnet_runtime` rule needs a concrete arch to find dotnet, so it is refused
+  in an `any` component.
+
+### Detection
+
+`src/detection.rs` holds the logic:
+- the `Machine` trait, which lists every question detection asks;
+- `is_installed`;
+- `applies_to`.
+
+`src/windows.rs` (`WindowsMachine`, `windows-sys`) answers those questions for
+real and holds the crate's only `unsafe` code. `tests/detection.rs` answers them
+with a `FakeMachine`, which ignores case like Windows does.
+`tests/common/mod.rs` holds the fixture helpers that both test files share.
+
+- **When in doubt, "not installed".** Each of these fails its rule instead of
+  raising an error:
+  - a value of the wrong type;
+  - an unparsable version;
+  - a preview .NET folder;
+  - an empty version folder left by an uninstall.
+
+  Reinstalling is harmless, because the installer reports "already there".
+  Skipping a missing runtime is not.
+- **`Err` only when the machine cannot answer,** such as access denied. `all`
+  and `any` treat an error as "unknown": a rule that settles the result wins
+  over it.
+- **The client is 64-bit only,** so `NativeArch` is `X64` or `Arm64`.
+  `applies_to` puts ARM64 components on ARM64 only. x64 ones go on both, because
+  emulated x64 programs need their own runtimes.
+- **.NET roots:**
+  - x86 uses `{program_files_x86}\dotnet`.
+  - The native architecture uses `{program_files}\dotnet`.
+  - x64 on ARM64 uses `{program_files}\dotnet\x64`.
+
+  A runtime counts only when it has the same major version, is at least `min`,
+  and has `<framework>.deps.json` in its folder.
+- **Command rules** run only if the program exists, without a window and with a
+  60-second limit, and look at nothing but the exit code.
+- Paths are joined with `\` on every platform, so the fake and the real machine
+  see the same strings.
 
 ## Invariants
 

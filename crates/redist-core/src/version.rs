@@ -19,6 +19,11 @@ pub struct Version {
 }
 
 impl Version {
+    /// A four-part version, such as a file version resource.
+    pub fn from_parts(parts: [u32; 4]) -> Version {
+        Version { parts, len: 4 }
+    }
+
     /// The first part.
     pub fn major(&self) -> u32 {
         self.parts[0]

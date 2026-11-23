@@ -175,6 +175,12 @@ impl TryFrom<RawComponent> for Component {
             }
         };
         raw.installer.check().map_err(fail)?;
+        if raw.arch == Arch::Any && raw.detect.uses_dotnet() {
+            return Err(fail(
+                "a dotnet_runtime rule needs the component's arch to find dotnet; \"any\" has none"
+                    .into(),
+            ));
+        }
         let exit_codes = ExitCodes::new(
             raw.exit_ok,
             raw.exit_reboot,

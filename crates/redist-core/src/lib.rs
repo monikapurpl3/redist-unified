@@ -4,6 +4,9 @@
 //! URLs, hashes, detection rules, silent arguments, exit codes) comes from the
 //! signed manifest, which [`manifest::Manifest::parse`] reads.
 
+pub mod detection;
 pub mod manifest;
 pub mod timestamp;
 pub mod version;
+#[cfg(windows)]
+pub mod windows;
