@@ -10,8 +10,9 @@ part of the design.
 
 ## State of the project
 
-Milestone 1 (the manifest and detection library) has started. So far only the
-Cargo workspace exists, and it has no logic yet.
+Milestone 1 is the manifest and detection library. The manifest schema and its
+parser are done. Detection (evaluating the rules against a real or fake
+registry and file system) is next.
 
 ## Commands
 
@@ -24,6 +25,7 @@ cargo build                                          # debug build
 cargo build --release --locked                       # target/release/redist.exe
 cargo test --locked                                  # every crate
 cargo test -p redist-core <name>                     # tests whose name contains <name>
+cargo test -p redist-core --test manifest            # one integration test file
 cargo clippy --all-targets --locked -- -D warnings
 cargo fmt --check
 ```
@@ -93,6 +95,57 @@ The client never carries on and reports success.
   installer in milestone 2.
 - `Cargo.lock` is committed, and every release build uses `--locked`.
 - `.gitattributes` forces LF line endings.
+
+### The manifest schema
+
+The schema lives in `crates/redist-core/src/manifest.rs` and the modules under
+`manifest/`. The rustdoc on each type is the reference for its JSON fields.
+`tests/data/manifest.json` shows every installer and rule type.
+
+- **Parsing is strict.** Every struct uses `deny_unknown_fields`, so a typo in
+  the manifest fails instead of being ignored. Adding a field therefore needs a
+  new client and a raised `min_client`.
+- **Checks happen during deserialization,** so each error carries a line and
+  column:
+  - Value types check themselves through `try_from`: `Version`, `Timestamp`,
+    `HttpsUrl`, `Sha256`, `RelativePath`, `KnownPath`, `RegistryKey`.
+  - Rules that combine fields go through a private `Raw*` twin and a
+    `TryFrom` (`RawComponent`, `RawRegistryRule`, `RawCommandRule`).
+  - Only checks across components, such as unique ids, run after parsing, in
+    `Manifest::parse`.
+- `Manifest::parse` reads `schema` alone first, so a newer manifest reports
+  "update the client" rather than an error about some field.
+- **Registry rules:**
+  - They are `HKLM` only.
+  - They pick a `view` (`"32"` or `"64"`), and a key that names `WOW6432Node`
+    is refused. This works on 32-bit Windows too.
+  - They take at most one of `min`, `equals` and `min_version`. With none, they
+    check presence.
+- **Paths:**
+  - File and command paths start at a known folder (`{system32}`,
+    `{syswow64}`, `{windows}`, `{program_files}`, `{program_files_x86}`),
+    which the client resolves through Windows, never through the environment
+    or `PATH`.
+  - No path can contain `..`.
+- **Installers:**
+  - `exe` and `msi`.
+  - `extract`, a self-extractor with `{dir}` in `extract_args`, then `run`
+    inside that folder (DirectX).
+  - `windows_feature` (DISM, NetFx3). It is the only installer without
+    `url` and `sha256`.
+- **Arch:** `x86`, `x64` or `arm64`, plus `any` for components that are not tied
+  to one architecture (DirectX, Windows features).
+- **Exit codes:** `exit_ok`, `exit_reboot`, `exit_already` and `exit_retry`
+  are all required, can be empty except `exit_ok`, and never share a code. A
+  code in none of them means failure.
+- **`latest_client`** is `version` and `url` only. The client never downloads
+  itself, so it has no hash.
+- **What `parse` leaves out:** it does not verify the signature and does not
+  decide acceptance (replay protection, `min_client`). Both belong to
+  milestone 3.
+- **The fixture is not real data:** its URLs and hashes are dummies, and its
+  silent arguments and detection values have not been checked against the real
+  installers.
 
 ## Invariants
 

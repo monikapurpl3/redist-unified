@@ -1,0 +1,139 @@
+{
+  "schema": 1,
+  "version": 42,
+  "issued": "2026-11-23T12:00:00Z",
+  "min_client": "0.1.0",
+  "latest_client": {
+    "version": "0.1.0",
+    "url": "https://github.com/monikapurpl3/redist-unified/releases"
+  },
+  "components": [
+    {
+      "id": "vcredist-2015-2022-x64",
+      "name": "Visual C++ 2015-2022 (x64)",
+      "arch": "x64",
+      "version": "14.44.35211.0",
+      "url": "https://download.example/vc_redist.x64.exe",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+      "installer": { "type": "exe", "args": ["/install", "/quiet", "/norestart"] },
+      "detect": {
+        "type": "all",
+        "rules": [
+          {
+            "type": "registry",
+            "key": "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64",
+            "view": "64",
+            "value": "Installed",
+            "equals": 1
+          },
+          {
+            "type": "registry",
+            "key": "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64",
+            "view": "64",
+            "value": "Bld",
+            "min": 35211
+          }
+        ]
+      },
+      "exit_ok": [0],
+      "exit_reboot": [3010, 1641],
+      "exit_already": [1638],
+      "exit_retry": [1618]
+    },
+    {
+      "id": "vcredist-2015-2022-x86",
+      "name": "Visual C++ 2015-2022 (x86)",
+      "arch": "x86",
+      "version": "14.44.35211.0",
+      "url": "https://download.example/vc_redist.x86.exe",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+      "installer": { "type": "exe", "args": ["/install", "/quiet", "/norestart"] },
+      "detect": {
+        "type": "all",
+        "rules": [
+          {
+            "type": "registry",
+            "key": "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x86",
+            "view": "32",
+            "value": "Installed",
+            "equals": 1
+          },
+          {
+            "type": "registry",
+            "key": "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x86",
+            "view": "32",
+            "value": "Bld",
+            "min": 35211
+          }
+        ]
+      },
+      "exit_ok": [0],
+      "exit_reboot": [3010, 1641],
+      "exit_already": [1638],
+      "exit_retry": [1618]
+    },
+    {
+      "id": "directx-jun2010",
+      "name": "DirectX End-User Runtime (June 2010)",
+      "arch": "any",
+      "version": "9.29.1974",
+      "url": "https://download.example/directx_Jun2010_redist.exe",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000003",
+      "installer": {
+        "type": "extract",
+        "extract_args": ["/Q", "/T:{dir}"],
+        "run": "DXSETUP.exe",
+        "args": ["/silent"]
+      },
+      "detect": {
+        "type": "all",
+        "rules": [
+          { "type": "file", "path": "{system32}\\d3dx9_43.dll" },
+          { "type": "file", "path": "{syswow64}\\d3dx9_43.dll" },
+          { "type": "file", "path": "{system32}\\xaudio2_7.dll" },
+          { "type": "file", "path": "{syswow64}\\xaudio2_7.dll" }
+        ]
+      },
+      "exit_ok": [0],
+      "exit_reboot": [],
+      "exit_already": [],
+      "exit_retry": []
+    },
+    {
+      "id": "dotnet-desktop-8-x64",
+      "name": ".NET 8 Desktop Runtime (x64)",
+      "arch": "x64",
+      "version": "8.0.11",
+      "url": "https://download.example/windowsdesktop-runtime-8.0.11-win-x64.exe",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000004",
+      "installer": { "type": "exe", "args": ["/install", "/quiet", "/norestart"] },
+      "detect": {
+        "type": "dotnet_runtime",
+        "framework": "Microsoft.WindowsDesktop.App",
+        "min": "8.0.0"
+      },
+      "exit_ok": [0],
+      "exit_reboot": [3010, 1641],
+      "exit_already": [1638],
+      "exit_retry": [1618]
+    },
+    {
+      "id": "netfx35",
+      "name": ".NET Framework 3.5",
+      "arch": "any",
+      "version": "3.5",
+      "installer": { "type": "windows_feature", "feature": "NetFx3" },
+      "detect": {
+        "type": "registry",
+        "key": "HKLM\\SOFTWARE\\Microsoft\\NET Framework Setup\\NDP\\v3.5",
+        "view": "64",
+        "value": "Install",
+        "equals": 1
+      },
+      "exit_ok": [0],
+      "exit_reboot": [3010],
+      "exit_already": [],
+      "exit_retry": []
+    }
+  ]
+}
