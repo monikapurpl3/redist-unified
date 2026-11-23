@@ -1,0 +1,7 @@
+# The client has to start on a machine with no VC++ runtime (installing it is
+# the client's job), so the CRT is linked statically.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
