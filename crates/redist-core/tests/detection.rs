@@ -2,209 +2,16 @@
 
 mod common;
 
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::io;
-use std::path::{Path, PathBuf};
-
-use common::{DIRECTX, DOTNET, NETFX, VC_X64, VC_X86, component, fixture, parse_edited};
-use redist_core::detection::{
-    DetectError, Machine, NativeArch, RegistryValue, applies_to, is_installed,
+use common::{
+    DESKTOP, DIRECTX, DOTNET, FakeMachine, NETFX, NETFX_KEY, VC_KEY_X64, VC_KEY_X86, VC_X64,
+    VC_X86, arm64, component, fixture, parse_edited, with_vc, x64,
 };
-use redist_core::manifest::{Arch, Component, KnownFolder, Manifest, RegistryView};
-use redist_core::version::Version;
+use redist_core::detection::{DetectError, NativeArch, RegistryValue, applies_to, is_installed};
+use redist_core::manifest::{Arch, Component, Manifest, RegistryView};
 use serde_json::json;
-
-const VC_KEY_X64: &str = r"SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64";
-const VC_KEY_X86: &str = r"SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x86";
-const NETFX_KEY: &str = r"SOFTWARE\Microsoft\NET Framework Setup\NDP\v3.5";
-const DESKTOP: &str = "Microsoft.WindowsDesktop.App";
-
-/// A machine made of maps. Like Windows, it ignores the case of registry
-/// keys, value names and paths.
-struct FakeMachine {
-    native: NativeArch,
-    /// Registry keys by view and lowercase path, each with its values by
-    /// lowercase name.
-    keys: HashMap<(RegistryView, String), HashMap<String, RegistryValue>>,
-    /// Files by lowercase path, with their version resource.
-    files: HashMap<String, Option<Version>>,
-    /// Folders by lowercase path, with the names of their subfolders.
-    folders: HashMap<String, Vec<String>>,
-    /// Exit codes of the programs a command rule may run.
-    exit_codes: HashMap<String, u32>,
-    /// Key or path prefixes (lowercase) that answer "access denied".
-    denied: Vec<String>,
-    /// Every program run, with its arguments.
-    runs: RefCell<Vec<(String, Vec<String>)>>,
-}
-
-impl FakeMachine {
-    fn new(native: NativeArch) -> Self {
-        FakeMachine {
-            native,
-            keys: HashMap::new(),
-            files: HashMap::new(),
-            folders: HashMap::new(),
-            exit_codes: HashMap::new(),
-            denied: Vec::new(),
-            runs: RefCell::new(Vec::new()),
-        }
-    }
-
-    fn key(mut self, view: RegistryView, subkey: &str) -> Self {
-        self.keys.entry((view, subkey.to_lowercase())).or_default();
-        self
-    }
-
-    fn value(mut self, view: RegistryView, subkey: &str, name: &str, value: RegistryValue) -> Self {
-        self.keys
-            .entry((view, subkey.to_lowercase()))
-            .or_default()
-            .insert(name.to_lowercase(), value);
-        self
-    }
-
-    /// Adds a file, and every folder on its path.
-    fn file(mut self, path: &str, version: Option<&str>) -> Self {
-        self.files
-            .insert(path.to_lowercase(), version.map(|v| v.parse().unwrap()));
-        let parent = path.rsplit_once('\\').unwrap().0;
-        self.add_folder(parent);
-        self
-    }
-
-    /// Adds an empty folder, and every folder on its path.
-    fn folder(mut self, path: &str) -> Self {
-        self.add_folder(path);
-        self
-    }
-
-    fn add_folder(&mut self, path: &str) {
-        self.folders.entry(path.to_lowercase()).or_default();
-        if let Some((parent, name)) = path.rsplit_once('\\') {
-            let names = self.folders.entry(parent.to_lowercase()).or_default();
-            if !names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
-                names.push(name.to_owned());
-            }
-            self.add_folder(parent);
-        }
-    }
-
-    /// Adds a .NET runtime as its installer leaves it: the version folder
-    /// with the framework's deps.json in it.
-    fn dotnet(self, root: &str, framework: &str, version: &str) -> Self {
-        self.file(
-            &format!(r"{root}\shared\{framework}\{version}\{framework}.deps.json"),
-            None,
-        )
-    }
-
-    fn program(mut self, path: &str, exit_code: u32) -> Self {
-        self = self.file(path, None);
-        self.exit_codes.insert(path.to_lowercase(), exit_code);
-        self
-    }
-
-    fn deny(mut self, prefix: &str) -> Self {
-        self.denied.push(prefix.to_lowercase());
-        self
-    }
-
-    fn check_access(&self, what: &str) -> io::Result<String> {
-        let what = what.to_lowercase();
-        if self.denied.iter().any(|prefix| what.starts_with(prefix)) {
-            Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "access denied",
-            ))
-        } else {
-            Ok(what)
-        }
-    }
-}
-
-impl Machine for FakeMachine {
-    fn native_arch(&self) -> NativeArch {
-        self.native
-    }
-
-    fn known_folder(&self, folder: KnownFolder) -> io::Result<PathBuf> {
-        Ok(PathBuf::from(match folder {
-            KnownFolder::Windows => r"C:\Windows",
-            KnownFolder::System32 => r"C:\Windows\System32",
-            KnownFolder::SysWow64 => r"C:\Windows\SysWOW64",
-            KnownFolder::ProgramFiles => r"C:\Program Files",
-            KnownFolder::ProgramFilesX86 => r"C:\Program Files (x86)",
-        }))
-    }
-
-    fn registry_key_exists(&self, view: RegistryView, subkey: &str) -> io::Result<bool> {
-        let subkey = self.check_access(subkey)?;
-        Ok(self.keys.contains_key(&(view, subkey)))
-    }
-
-    fn registry_value(
-        &self,
-        view: RegistryView,
-        subkey: &str,
-        name: &str,
-    ) -> io::Result<Option<RegistryValue>> {
-        let subkey = self.check_access(subkey)?;
-        Ok(self
-            .keys
-            .get(&(view, subkey))
-            .and_then(|values| values.get(&name.to_lowercase()))
-            .cloned())
-    }
-
-    fn file_exists(&self, path: &Path) -> io::Result<bool> {
-        let path = self.check_access(&path.to_string_lossy())?;
-        Ok(self.files.contains_key(&path))
-    }
-
-    fn file_version(&self, path: &Path) -> io::Result<Option<Version>> {
-        let path = self.check_access(&path.to_string_lossy())?;
-        Ok(self.files.get(&path).copied().flatten())
-    }
-
-    fn subfolders(&self, path: &Path) -> io::Result<Vec<String>> {
-        let path = self.check_access(&path.to_string_lossy())?;
-        Ok(self.folders.get(&path).cloned().unwrap_or_default())
-    }
-
-    fn run(&self, program: &Path, args: &[String]) -> io::Result<u32> {
-        let program = program.to_string_lossy().into_owned();
-        self.runs
-            .borrow_mut()
-            .push((program.clone(), args.to_vec()));
-        self.exit_codes
-            .get(&program.to_lowercase())
-            .copied()
-            .ok_or_else(|| io::Error::other("the fake has no exit code for this program"))
-    }
-}
-
-fn x64() -> FakeMachine {
-    FakeMachine::new(NativeArch::X64)
-}
-
-fn arm64() -> FakeMachine {
-    FakeMachine::new(NativeArch::Arm64)
-}
 
 fn installed(component: &Component, machine: &FakeMachine) -> bool {
     is_installed(component, machine).unwrap()
-}
-
-/// A machine with both VC++ 2015-2022 runtimes at build `bld`.
-fn with_vc(machine: FakeMachine, bld: u32) -> FakeMachine {
-    use RegistryView::{Bits32, Bits64};
-    machine
-        .value(Bits64, VC_KEY_X64, "Installed", RegistryValue::Dword(1))
-        .value(Bits64, VC_KEY_X64, "Bld", RegistryValue::Dword(bld))
-        .value(Bits32, VC_KEY_X86, "Installed", RegistryValue::Dword(1))
-        .value(Bits32, VC_KEY_X86, "Bld", RegistryValue::Dword(bld))
 }
 
 #[test]
@@ -513,16 +320,13 @@ fn command_rules_run_only_existing_programs() {
 
     let machine = x64();
     assert!(!installed(netfx, &machine));
-    assert!(
-        machine.runs.borrow().is_empty(),
-        "a missing program was run"
-    );
+    assert!(machine.runs().is_empty(), "a missing program was run");
 
     for (code, expected) in [(0, true), (3010, true), (1, false)] {
         let machine = x64().program(program, code);
         assert_eq!(installed(netfx, &machine), expected, "exit code {code}");
         assert_eq!(
-            *machine.runs.borrow(),
+            machine.runs(),
             [(
                 program.to_owned(),
                 vec!["/feature".to_owned(), "NetFx3".to_owned()]

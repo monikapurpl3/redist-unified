@@ -2,8 +2,8 @@
 <!--
   Declares Windows 10 and 11 support. Without it, Windows tells a program it
   runs on Windows 8 (6.2), and reports Windows' own files as version 6.2 too.
-  Embedded in this crate's tests and examples by build.rs; the client exe
-  needs the same compatibility section in its own manifest.
+  Embedded in this crate's tests and examples by build.rs, and in redist.exe
+  (with requireAdministrator) by crates/redist/build.rs.
 -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">

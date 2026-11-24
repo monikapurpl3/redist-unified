@@ -5,7 +5,9 @@
 //! signed manifest, which [`manifest::Manifest::parse`] reads.
 
 pub mod detection;
+pub mod log;
 pub mod manifest;
+pub mod session;
 pub mod timestamp;
 pub mod version;
 #[cfg(windows)]

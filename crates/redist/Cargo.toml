@@ -8,6 +8,12 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
-# Add `redist-core = { path = "../redist-core" }` once the CLI calls the
-# library; cargo warns about an unused dependency until then.
 [dependencies]
+redist-core = { path = "../redist-core" }
+
+# The exe requires administrator rights (build.rs), so its own test build
+# could not run unelevated. Its tested parts are in the library (src/lib.rs).
+[[bin]]
+name = "redist"
+path = "src/main.rs"
+test = false

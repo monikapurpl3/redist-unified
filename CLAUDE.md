@@ -10,9 +10,19 @@ part of the design.
 
 ## State of the project
 
-Milestone 1, the manifest and detection library, is done. It covers the
-manifest schema and parser, plus detection against a fake machine (tests) and
-against Windows itself. Milestone 2, the CLI installer, is next.
+The milestones, in the maintainer's order:
+1. The manifest and detection library. Done.
+2. The CLI installer. It is built and tested against fakes, and real downloads
+   work. It has not installed anything for real yet, which needs a Windows VM
+   and a manifest with checked URLs, hashes and arguments.
+3. The UI.
+4. The signed manifest.
+5. The publish pipeline.
+6. CI and SignPath.
+7. Extras.
+
+The UI comes once the core and CLI are done, before anything is signed (the
+maintainer's decision, 2026-11-24).
 
 ## Commands
 
@@ -27,9 +37,23 @@ cargo test --locked                                  # every crate
 cargo test -p redist-core <name>                     # tests whose name contains <name>
 cargo test -p redist-core --test manifest            # one integration test file
 cargo test -p redist-core --lib windows              # the real Windows backend (read-only)
+cargo test -p redist-core --lib -- --ignored         # downloads from this repo on GitHub
 cargo clippy --all-targets --locked -- -D warnings
 cargo fmt --check
 ```
+
+**Never start `redist.exe` on the development machine.** It requires
+administrator rights and installs runtimes, so test it in a VM.
+- From an unelevated shell, `cargo run` fails with "requires elevation"
+  (os error 740).
+- From PowerShell, even `redist.exe --help` raises a UAC prompt, because
+  PowerShell hands programs that need elevation to the Windows shell.
+- To check the exe without running it, read its manifest with `mt.exe`
+  (Windows SDK):
+
+  ```bash
+  mt.exe -nologo -inputresource:target\release\redist.exe;#1 -out:redist.manifest
+  ```
 
 Keep the build free of warnings. Cargo warns about unused dependencies,
 including unused `[workspace.dependencies]` entries, so add a dependency in the
@@ -38,8 +62,10 @@ same change as the code that uses it.
 **Check the static CRT after changing the build setup.** Run
 `dumpbin -nologo -dependents target/release/redist.exe`. The client must not
 import `VCRUNTIME140.dll` or any `api-ms-win-crt-*` DLL, because installing
-those is its job. Only `KERNEL32.dll`, `ntdll.dll` and `api-ms-win-core-*` API
-sets are expected. A build without `+crt-static` lists the CRT DLLs.
+those is its job. Only DLLs that are part of Windows are expected: `kernel32`,
+`ntdll`, `advapi32`, `shell32`, `combase`, `version`, `winhttp`,
+`bcryptprimitives` and the `api-ms-win-core-*` API sets. A build without
+`+crt-static` lists the CRT DLLs.
 
 ## What is being built
 
@@ -82,23 +108,33 @@ The client never carries on and reports success.
 
 ### Code layout
 
-- `crates/redist-core` is the library: manifest, detection and, later, install
-  logic. Milestone 1 is this library, the real product.
+- `crates/redist-core` is the library: manifest, detection, and the install
+  session. It is the real product.
 - `crates/redist` is the thin binary (CLI, later the UI) that builds
-  `redist.exe`. It does not depend on `redist-core` yet; add the path
-  dependency when it first calls the library.
+  `redist.exe`.
+  - `src/lib.rs` holds what has tests: the command line, and every line of text
+    it prints.
+  - `src/main.rs` wires up the Windows pieces.
+  - For now `--manifest <file>` reads an unsigned local manifest, for
+    development only. `--only <id>` installs one component, and `--check`
+    only detects.
+  - Exit codes: 0, 1 (failure), 2 (usage or manifest error), and 3010 (a
+    restart is still needed).
 - The repository is called `redist-unified`. The crate and exe names are
   working names and have not been renamed to match.
 - `.cargo/config.toml` sets `+crt-static` for `x86_64-pc-windows-msvc` (the
   first target) and `aarch64-pc-windows-msvc` (later).
-- **The exe needs an application manifest** with `requireAdministrator` and the
-  Windows 10/11 `supportedOS` GUID. It comes with the CLI in milestone 2.
+- **Application manifests.** `crates/redist/build.rs` embeds
+  `requireAdministrator` plus `crates/redist-core/windows-compat.manifest` (the
+  Windows 10/11 `supportedOS` GUID) through `rustc-link-arg-bins`.
+  - That link argument also reaches the binary's own test build, which then
+    cannot run unelevated. So the `[[bin]]` has `test = false`, and its tested
+    code lives in the crate's library.
+  - `crates/redist-core/build.rs` embeds the compatibility manifest alone
+    (`asInvoker`) in the library's tests and examples. They see Windows as the
+    client does, without elevation.
   - Without `supportedOS`, Windows reports its own files (`kernel32.dll`) as
     version 6.2. Runtime DLLs are not affected.
-  - `crates/redist-core/build.rs` embeds `windows-compat.manifest` (the
-    compatibility section only, `asInvoker`) in the library's tests and
-    examples. That way they see Windows as the client will, and never need
-    elevation.
 - `Cargo.lock` is committed, and every release build uses `--locked`.
 - `.gitattributes` forces LF line endings.
 
@@ -148,7 +184,7 @@ The schema lives in `crates/redist-core/src/manifest.rs` and the modules under
   itself, so it has no hash.
 - **What `parse` leaves out:** it does not verify the signature and does not
   decide acceptance (replay protection, `min_client`). Both belong to
-  milestone 3.
+  milestone 4.
 - **The fixture is not real data:** its URLs and hashes are dummies, and its
   silent arguments and detection values have not been checked against the real
   installers.
@@ -194,6 +230,60 @@ with a `FakeMachine`, which ignores case like Windows does.
 - Paths are joined with `\` on every platform, so the fake and the real machine
   see the same strings.
 
+### Installing: the session
+
+`src/session.rs` runs the whole flow:
+1. Detect.
+2. Download every missing component, four at a time.
+3. Install them one by one, in manifest order.
+4. Detect again after each one that reports plain success.
+
+It reaches the outside world only through the `Fetcher`, `Runner`,
+`Reporter` and `Log` it is given. `tests/session.rs` drives it with fakes, and
+the `FakeMachine` in `tests/common` can change mid-test, so a fake installer
+can "install" things.
+
+- **The first failure stops the run.** Nothing after it installs, and the run
+  never reports success.
+  - Downloads all finish first. Then the first failure in manifest order, if
+    any, is reported, and nothing is installed.
+- **The SHA-256 is checked on the file on disk,** which is the one that will
+  run. A mismatch is deleted and never run.
+- **Exit codes:**
+  - 1618 waits 30 seconds and tries again, up to 10 times.
+  - 3010 and 1641 skip the detection after installing, because what they
+    install may only show after the restart.
+  - 1638 counts as done.
+  - Plain success that detection then does not see is a failure: the
+    installer did nothing.
+- **Commands the client builds:**
+  - `msi` runs `{system32}\msiexec.exe /i <file> <args>`.
+  - `extract` replaces `{dir}` with `<work>\<id>`, then runs `<run>` from
+    that folder.
+  - `windows_feature` runs `{system32}\dism.exe /Online /Enable-Feature
+    /FeatureName:<f> /All /NoRestart`. These are the only installer arguments
+    that do not come from the manifest.
+
+The Windows backend lives in `src/windows/`:
+- **`WinHttpFetcher`** downloads through WinHTTP.
+  - It uses the system proxy and certificate store and only TLS 1.2 and 1.3.
+    It follows redirects, but never from HTTPS to HTTP.
+  - Rust cannot print WinHTTP's error messages, which are not in the system
+    message table, so `readable` puts them into words.
+  - WinHTTP replaced the plan's `reqwest`. `reqwest` 0.13 needs `aws-lc-rs`,
+    which takes CMake and NASM to build, and `tokio`.
+- **`ProcessRunner`** runs installers without a window, from the work folder.
+  - Each installer's console output goes to `<program>.output.txt` there.
+  - It stops an installer after 60 minutes.
+- **`create_work_dir`** makes `%SystemRoot%\Temp\redist-unified-<random>`.
+  - It is created in one call with a descriptor: administrators and SYSTEM
+    write, users and the owner only read, and a High integrity no-write-up
+    label.
+  - So no unelevated program can swap a checked installer or plant a DLL next
+    to it. `workdir.rs` explains why.
+  - The CLI deletes its subfolders at the end, and keeps the log and the
+    installers' output.
+
 ## Invariants
 
 - Microsoft installers are never repacked or modified. By default the client
@@ -232,5 +322,5 @@ MPL-2.0 and Unicode-3.0 are fine.
 ## Open questions
 
 The open questions are the maintainer's to decide. Do not settle them in code.
-They are the product name, which out-of-support .NET majors to include, console
-or UI for v1, and whether to publish the offline pack.
+They are the product name, which out-of-support .NET majors to include, and
+whether to publish the offline pack.

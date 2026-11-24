@@ -48,6 +48,11 @@ impl fmt::Display for HttpsUrl {
 pub struct Sha256([u8; 32]);
 
 impl Sha256 {
+    /// A digest computed elsewhere, such as over a downloaded file.
+    pub fn from_bytes(digest: [u8; 32]) -> Sha256 {
+        Sha256(digest)
+    }
+
     /// The digest.
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0

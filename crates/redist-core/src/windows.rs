@@ -1,22 +1,33 @@
-//! The real [`Machine`]: Windows itself.
+//! Windows itself: the real [`Machine`], downloads ([`WinHttpFetcher`]),
+//! installers ([`ProcessRunner`]) and the run's private work folder
+//! ([`create_work_dir`]).
 //!
-//! Every question only reads, except [`Machine::run`], which runs the program
-//! a `command` rule names.
+//! Every `Machine` question only reads, except [`Machine::run`], which runs
+//! the program a `command` rule names.
+
+mod http;
+mod process;
+mod workdir;
+
+pub use http::WinHttpFetcher;
+pub use process::{INSTALL_TIMEOUT, ProcessRunner, console_is_ours};
+pub use workdir::{create_work_dir, is_elevated};
 
 use std::ffi::{OsStr, OsString, c_void};
 use std::io;
 use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::ptr;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
     ERROR_BAD_EXE_FORMAT, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_PATH_NOT_FOUND,
-    ERROR_RESOURCE_DATA_NOT_FOUND, ERROR_RESOURCE_TYPE_NOT_FOUND, ERROR_SUCCESS, WIN32_ERROR,
+    ERROR_RESOURCE_DATA_NOT_FOUND, ERROR_RESOURCE_TYPE_NOT_FOUND, ERROR_SUCCESS, WAIT_OBJECT_0,
+    WAIT_TIMEOUT, WIN32_ERROR,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     GetFileVersionInfoSizeW, GetFileVersionInfoW, VS_FIXEDFILEINFO, VerQueryValueW,
@@ -31,7 +42,9 @@ use windows_sys::Win32::System::Registry::{
 use windows_sys::Win32::System::SystemInformation::{
     IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_ARM64,
 };
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, IsWow64Process2};
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcess, IsWow64Process2, WaitForSingleObject,
+};
 use windows_sys::Win32::UI::Shell::{
     FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_System, FOLDERID_SystemX86,
     FOLDERID_Windows, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
@@ -44,8 +57,7 @@ use crate::version::Version;
 /// How long a `command` rule's program may run before it is stopped.
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// `CREATE_NO_WINDOW`: a console program run for a `command` rule gets no
-/// window.
+/// `CREATE_NO_WINDOW`: a console program run by the client gets no window.
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// The signature every `VS_FIXEDFILEINFO` starts with.
@@ -88,32 +100,7 @@ impl Machine for WindowsMachine {
     }
 
     fn known_folder(&self, folder: KnownFolder) -> io::Result<PathBuf> {
-        let id = match folder {
-            KnownFolder::Windows => &FOLDERID_Windows,
-            KnownFolder::System32 => &FOLDERID_System,
-            KnownFolder::SysWow64 => &FOLDERID_SystemX86,
-            KnownFolder::ProgramFiles => &FOLDERID_ProgramFiles,
-            KnownFolder::ProgramFilesX86 => &FOLDERID_ProgramFilesX86,
-        };
-        let mut raw = ptr::null_mut();
-        // SAFETY: id points at a GUID constant, a null token means the
-        // current user, and raw is a valid out-pointer.
-        let result =
-            unsafe { SHGetKnownFolderPath(id, KF_FLAG_DEFAULT as u32, ptr::null_mut(), &mut raw) };
-        let path = if result >= 0 {
-            // SAFETY: on success raw is a NUL-terminated UTF-16 string.
-            let units = unsafe {
-                let len = (0..).take_while(|&i| *raw.add(i) != 0).count();
-                std::slice::from_raw_parts(raw, len)
-            };
-            Ok(PathBuf::from(OsString::from_wide(units)))
-        } else {
-            Err(io::Error::from_raw_os_error(result))
-        };
-        // SAFETY: the string must be freed whether or not the call
-        // succeeded; freeing null is allowed.
-        unsafe { CoTaskMemFree(raw.cast()) };
-        path
+        known_folder_path(folder)
     }
 
     fn registry_key_exists(&self, view: RegistryView, subkey: &str) -> io::Result<bool> {
@@ -263,35 +250,82 @@ impl Machine for WindowsMachine {
     }
 
     fn run(&self, program: &Path, args: &[String]) -> io::Result<u32> {
-        let mut child = Command::new(program)
+        let mut command = Command::new(program);
+        command
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()?;
-        let started = Instant::now();
-        loop {
-            if let Some(status) = child.try_wait()? {
-                // Windows exit codes are DWORDs; std hands them over as i32.
-                return status
-                    .code()
-                    .map(|code| code as u32)
-                    .ok_or_else(|| io::Error::other("the program ended without an exit code"));
-            }
-            if started.elapsed() > COMMAND_TIMEOUT {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    format!(
-                        "it was stopped after running for {} seconds",
-                        COMMAND_TIMEOUT.as_secs()
-                    ),
-                ));
-            }
-            thread::sleep(Duration::from_millis(50));
+            .stderr(Stdio::null());
+        run_hidden(command, COMMAND_TIMEOUT)
+    }
+}
+
+/// Where Windows says a known folder is.
+pub fn known_folder_path(folder: KnownFolder) -> io::Result<PathBuf> {
+    let id = match folder {
+        KnownFolder::Windows => &FOLDERID_Windows,
+        KnownFolder::System32 => &FOLDERID_System,
+        KnownFolder::SysWow64 => &FOLDERID_SystemX86,
+        KnownFolder::ProgramFiles => &FOLDERID_ProgramFiles,
+        KnownFolder::ProgramFilesX86 => &FOLDERID_ProgramFilesX86,
+    };
+    let mut raw = ptr::null_mut();
+    // SAFETY: id points at a GUID constant, a null token means the
+    // current user, and raw is a valid out-pointer.
+    let result =
+        unsafe { SHGetKnownFolderPath(id, KF_FLAG_DEFAULT as u32, ptr::null_mut(), &mut raw) };
+    let path = if result >= 0 {
+        // SAFETY: on success raw is a NUL-terminated UTF-16 string.
+        let units = unsafe {
+            let len = (0..).take_while(|&i| *raw.add(i) != 0).count();
+            std::slice::from_raw_parts(raw, len)
+        };
+        Ok(PathBuf::from(OsString::from_wide(units)))
+    } else {
+        Err(io::Error::from_raw_os_error(result))
+    };
+    // SAFETY: the string must be freed whether or not the call
+    // succeeded; freeing null is allowed.
+    unsafe { CoTaskMemFree(raw.cast()) };
+    path
+}
+
+/// Starts `command` without a console window and waits up to `timeout` for
+/// its exit code. A program still running then is stopped.
+fn run_hidden(mut command: Command, timeout: Duration) -> io::Result<u32> {
+    let mut child = command.creation_flags(CREATE_NO_WINDOW).spawn()?;
+    let millis = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX - 1);
+    // SAFETY: the handle belongs to `child`, which outlives the wait.
+    match unsafe { WaitForSingleObject(child.as_raw_handle(), millis) } {
+        WAIT_OBJECT_0 => {}
+        WAIT_TIMEOUT => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "it was stopped after running for {}",
+                    duration_text(timeout)
+                ),
+            ));
         }
+        _ => return Err(io::Error::last_os_error()),
+    }
+    // Windows exit codes are DWORDs; std hands them over as i32.
+    child
+        .wait()?
+        .code()
+        .map(|code| code as u32)
+        .ok_or_else(|| io::Error::other("the program ended without an exit code"))
+}
+
+/// "60 seconds", "60 minutes".
+fn duration_text(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    if seconds >= 120 && seconds % 60 == 0 {
+        format!("{} minutes", seconds / 60)
+    } else {
+        format!("{seconds} seconds")
     }
 }
 
