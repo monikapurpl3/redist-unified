@@ -69,18 +69,24 @@ impl FakeServer {
         }
     }
 
+    /// The ranges asked of a mirror, sorted. Parts run in parallel, so the
+    /// order they were asked in varies from run to run.
     fn requests_to(&self, mirror: usize) -> Vec<Range<u64>> {
+        let mut ranges = self.requests_in_order(mirror);
+        ranges.sort_by_key(|range| (range.start, range.end));
+        ranges
+    }
+
+    /// The ranges asked of a mirror, in the order they were asked.
+    fn requests_in_order(&self, mirror: usize) -> Vec<Range<u64>> {
         let url = &self.mirrors[mirror].0;
-        let mut ranges: Vec<_> = self
-            .requests
+        self.requests
             .lock()
             .unwrap()
             .iter()
             .filter(|(u, _)| u == url)
             .map(|(_, range)| range.clone())
-            .collect();
-        ranges.sort_by_key(|range| (range.start, range.end));
-        ranges
+            .collect()
     }
 
     fn waits(&self) -> Vec<Duration> {
@@ -289,7 +295,15 @@ fn without_ranges_anywhere_the_file_comes_whole() {
     let server = FakeServer::new(SIZE, &[Mirror::NoRanges]);
     let dest = Dest::new("whole");
     assert_downloaded(&server, &dest);
-    assert_eq!(server.requests_to(0).last().unwrap(), &(0..SIZE as u64));
+    // The parts that asked before the first refusal was known were refused
+    // (which ones varies); after them all comes one request for everything.
+    let requests = server.requests_in_order(0);
+    assert_eq!(requests.last().unwrap(), &(0..SIZE as u64));
+    assert_eq!(
+        requests.iter().filter(|r| **r == (0..SIZE as u64)).count(),
+        1
+    );
+    assert!((2..=5).contains(&requests.len()), "{requests:?}");
 }
 
 #[test]
