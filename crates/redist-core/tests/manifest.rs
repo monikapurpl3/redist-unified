@@ -53,11 +53,21 @@ fn the_fixture_parses() {
     assert_eq!(vc.arch, Arch::X64);
     assert_eq!(vc.version.to_string(), "14.44.35211.0");
     let download = vc.download.as_ref().unwrap();
+    assert_eq!(download.urls.len(), 1);
     assert_eq!(
-        download.url.as_str(),
+        download.urls[0].as_str(),
         "https://download.example/vc_redist.x64.exe"
     );
+    assert_eq!(download.size, 25_634_048);
     assert_eq!(download.sha256.as_bytes()[31], 1);
+    let mirrors = &manifest.components[DOTNET].download.as_ref().unwrap().urls;
+    assert_eq!(
+        mirrors
+            .iter()
+            .map(|url| url.as_str().split('/').nth(2).unwrap())
+            .collect::<Vec<_>>(),
+        ["download.example", "mirror.example"]
+    );
     assert_eq!(
         vc.installer,
         Installer::Exe {
@@ -238,10 +248,45 @@ fn component_ids_are_checked_and_unique() {
 }
 
 #[test]
-fn downloads_are_https_and_hashed() {
+fn downloads_are_https_sized_and_hashed() {
     assert_refused(
-        |m| component(m, VC_X64)["url"] = json!("http://download.example/vc_redist.x64.exe"),
+        |m| component(m, VC_X64)["urls"] = json!(["http://download.example/vc_redist.x64.exe"]),
         "is not https://",
+    );
+    assert_refused(
+        |m| {
+            component(m, DOTNET)["urls"][1] = json!("http://mirror.example/dotnet.exe");
+        },
+        "is not https://",
+    );
+    assert_refused(
+        |m| component(m, VC_X64)["urls"] = json!([]),
+        "urls needs at least one URL",
+    );
+    assert_refused(
+        |m| {
+            component(m, VC_X64)["urls"] = json!([
+                "https://download.example/vc_redist.x64.exe",
+                "https://download.example/vc_redist.x64.exe"
+            ]);
+        },
+        "is listed twice",
+    );
+    assert_refused(
+        |m| component(m, VC_X64)["url"] = json!("https://download.example/vc_redist.x64.exe"),
+        "unknown field `url`",
+    );
+    assert_refused(
+        |m| component(m, VC_X64)["size"] = json!(0),
+        "size must be at least 1",
+    );
+    assert_refused(
+        |m| component(m, VC_X64)["size"] = json!(-5),
+        "invalid value",
+    );
+    assert_refused(
+        |m| remove(component(m, VC_X64), "size"),
+        "its installer needs urls, size and sha256",
     );
     assert_refused(
         |m| component(m, VC_X64)["sha256"] = json!("abc"),
@@ -253,14 +298,18 @@ fn downloads_are_https_and_hashed() {
     );
     assert_refused(
         |m| remove(component(m, VC_X64), "sha256"),
-        "its installer needs url and sha256",
+        "its installer needs urls, size and sha256",
     );
     assert_refused(
-        |m| remove(component(m, DIRECTX), "url"),
-        "its installer needs url and sha256",
+        |m| remove(component(m, DIRECTX), "urls"),
+        "its installer needs urls, size and sha256",
     );
     assert_refused(
-        |m| component(m, NETFX)["url"] = json!("https://download.example/netfx35.exe"),
+        |m| component(m, NETFX)["urls"] = json!(["https://download.example/netfx35.exe"]),
+        "a windows_feature installer downloads nothing",
+    );
+    assert_refused(
+        |m| component(m, NETFX)["size"] = json!(1000),
         "a windows_feature installer downloads nothing",
     );
 }

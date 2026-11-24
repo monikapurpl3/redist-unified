@@ -13,7 +13,8 @@
       "name": "Visual C++ 2015-2022 (x64)",
       "arch": "x64",
       "version": "14.44.35211.0",
-      "url": "https://download.example/vc_redist.x64.exe",
+      "urls": ["https://download.example/vc_redist.x64.exe"],
+      "size": 25634048,
       "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
       "installer": { "type": "exe", "args": ["/install", "/quiet", "/norestart"] },
       "detect": {
@@ -45,7 +46,8 @@
       "name": "Visual C++ 2015-2022 (x86)",
       "arch": "x86",
       "version": "14.44.35211.0",
-      "url": "https://download.example/vc_redist.x86.exe",
+      "urls": ["https://download.example/vc_redist.x86.exe"],
+      "size": 13897472,
       "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
       "installer": { "type": "exe", "args": ["/install", "/quiet", "/norestart"] },
       "detect": {
@@ -77,7 +79,8 @@
       "name": "DirectX End-User Runtime (June 2010)",
       "arch": "any",
       "version": "9.29.1974",
-      "url": "https://download.example/directx_Jun2010_redist.exe",
+      "urls": ["https://download.example/directx_Jun2010_redist.exe"],
+      "size": 100271992,
       "sha256": "0000000000000000000000000000000000000000000000000000000000000003",
       "installer": {
         "type": "extract",
@@ -104,7 +107,8 @@
       "name": ".NET 8 Desktop Runtime (x64)",
       "arch": "x64",
       "version": "8.0.11",
-      "url": "https://download.example/windowsdesktop-runtime-8.0.11-win-x64.exe",
+      "urls": ["https://download.example/windowsdesktop-runtime-8.0.11-win-x64.exe", "https://mirror.example/dotnet/windowsdesktop-runtime-8.0.11-win-x64.exe"],
+      "size": 58302416,
       "sha256": "0000000000000000000000000000000000000000000000000000000000000004",
       "installer": { "type": "exe", "args": ["/install", "/quiet", "/norestart"] },
       "detect": {

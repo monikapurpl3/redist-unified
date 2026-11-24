@@ -2,10 +2,9 @@
 //! settings and certificate store, and no TLS library in the client.
 
 use std::ffi::c_void;
-use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io;
 use std::mem::size_of;
-use std::path::Path;
+use std::ops::Range;
 use std::ptr;
 
 use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
@@ -21,14 +20,14 @@ use windows_sys::Win32::Networking::WinHttp::{
     ERROR_WINHTTP_UNABLE_TO_DOWNLOAD_SCRIPT, URL_COMPONENTS, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
     WINHTTP_FLAG_SECURE, WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2, WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3,
     WINHTTP_INTERNET_SCHEME_HTTPS, WINHTTP_OPTION_SECURE_PROTOCOLS, WINHTTP_QUERY_CONTENT_LENGTH,
-    WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect, WinHttpCrackUrl, WinHttpOpen,
-    WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
-    WinHttpSendRequest, WinHttpSetOption, WinHttpSetTimeouts,
+    WINHTTP_QUERY_CONTENT_RANGE, WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect,
+    WinHttpCrackUrl, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData,
+    WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetOption, WinHttpSetTimeouts,
 };
 
 use super::wide;
+use crate::download::Fetcher;
 use crate::manifest::HttpsUrl;
-use crate::session::Fetcher;
 
 const USER_AGENT: &str = concat!("redist-unified/", env!("CARGO_PKG_VERSION"));
 
@@ -52,8 +51,8 @@ impl Drop for Handle {
     }
 }
 
-/// Downloads over HTTPS with WinHTTP. Redirects are followed, except from
-/// HTTPS to plain HTTP (WinHTTP's default).
+/// Fetches byte ranges over HTTPS with WinHTTP. Redirects are followed,
+/// except from HTTPS to plain HTTP (WinHTTP's default).
 pub struct WinHttpFetcher {
     session: Handle,
 }
@@ -94,12 +93,15 @@ impl WinHttpFetcher {
         }
         Ok(WinHttpFetcher { session })
     }
+}
 
-    fn download(
+impl Fetcher for WinHttpFetcher {
+    fn fetch(
         &self,
         url: &HttpsUrl,
-        dest: &Path,
-        progress: &dyn Fn(u64, Option<u64>),
+        range: Range<u64>,
+        size: u64,
+        sink: &mut dyn FnMut(&[u8]) -> io::Result<()>,
     ) -> io::Result<()> {
         let target = Target::of(url)?;
         // SAFETY: host is NUL-terminated and outlives the call.
@@ -120,26 +122,43 @@ impl WinHttpFetcher {
                 WINHTTP_FLAG_SECURE,
             )
         })?;
-        // SAFETY: request is valid; there are no extra headers and no body.
-        if unsafe { WinHttpSendRequest(request.0, ptr::null(), 0, ptr::null(), 0, 0, 0) } == 0 {
+        let header = wide(format!(
+            "Range: bytes={}-{}\r\n",
+            range.start,
+            range.end - 1
+        ));
+        // SAFETY: request is valid; the header is NUL-terminated (length
+        // u32::MAX means "up to the NUL"); there is no body.
+        let sent = unsafe {
+            WinHttpSendRequest(request.0, header.as_ptr(), u32::MAX, ptr::null(), 0, 0, 0)
+        };
+        if sent == 0 {
             return Err(last_error());
         }
         // SAFETY: request is valid; the reserved pointer must be null.
         if unsafe { WinHttpReceiveResponse(request.0, ptr::null_mut()) } == 0 {
             return Err(last_error());
         }
-        let status = query_number(&request, WINHTTP_QUERY_STATUS_CODE)?.unwrap_or(0);
-        if status != 200 {
-            return Err(io::Error::other(format!(
-                "the server answered HTTP {status}"
-            )));
+        let whole = range.start == 0 && range.end == size;
+        match query_number(&request, WINHTTP_QUERY_STATUS_CODE)?.unwrap_or(0) {
+            206 => check_content_range(&request, &range, size)?,
+            200 if whole => {
+                if let Some(length) = query_number(&request, WINHTTP_QUERY_CONTENT_LENGTH)?
+                    && length != size
+                {
+                    return Err(wrong_size(length, size));
+                }
+            }
+            200 => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "the server does not send parts of files",
+                ));
+            }
+            status => return Err(status_error(status)),
         }
-        let total = query_number(&request, WINHTTP_QUERY_CONTENT_LENGTH)?;
 
-        let mut file = File::create_new(dest)?;
         let mut buffer = vec![0u8; 64 * 1024];
-        let mut received = 0u64;
-        progress(0, total);
         loop {
             let mut read = 0u32;
             // SAFETY: buffer has room for its whole length.
@@ -155,37 +174,65 @@ impl WinHttpFetcher {
                 return Err(last_error());
             }
             if read == 0 {
-                break;
+                return Ok(());
             }
-            file.write_all(&buffer[..read as usize])?;
-            received += u64::from(read);
-            progress(received, total);
+            sink(&buffer[..read as usize])?;
         }
-        if let Some(total) = total
-            && received != total
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!("the download stopped after {received} of {total} bytes"),
-            ));
-        }
-        file.flush()
     }
 }
 
-impl Fetcher for WinHttpFetcher {
-    fn fetch(
-        &self,
-        url: &HttpsUrl,
-        dest: &Path,
-        progress: &dyn Fn(u64, Option<u64>),
-    ) -> io::Result<()> {
-        let result = self.download(url, dest, progress);
-        if result.is_err() {
-            let _ = fs::remove_file(dest);
-        }
-        result
+/// Checks that a 206 answer holds exactly the range asked for, of a file of
+/// the expected size.
+fn check_content_range(request: &Handle, range: &Range<u64>, size: u64) -> io::Result<()> {
+    let text = query_text(request, WINHTTP_QUERY_CONTENT_RANGE)?.unwrap_or_default();
+    let Some((first, last, total)) = parse_content_range(&text) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("the server sent a part without saying which ({text:?})"),
+        ));
+    };
+    if total != size {
+        return Err(wrong_size(total, size));
     }
+    if first != range.start || last + 1 != range.end {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "the server sent bytes {first}-{last} instead of {}-{}",
+                range.start,
+                range.end - 1
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// `bytes <first>-<last>/<total>`.
+fn parse_content_range(text: &str) -> Option<(u64, u64, u64)> {
+    let (span, total) = text.trim().strip_prefix("bytes ")?.split_once('/')?;
+    let (first, last) = span.split_once('-')?;
+    Some((first.parse().ok()?, last.parse().ok()?, total.parse().ok()?))
+}
+
+fn wrong_size(actual: u64, expected: u64) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("the server's file is {actual} bytes; the manifest says {expected}"),
+    )
+}
+
+/// An HTTP status as an error whose kind says whether trying again can help.
+fn status_error(status: u64) -> io::Error {
+    let kind = match status {
+        404 | 410 => io::ErrorKind::NotFound,
+        401 | 403 | 407 => io::ErrorKind::PermissionDenied,
+        // Too many requests, a timeout, or the server's own trouble.
+        408 | 429 | 500..=599 => io::ErrorKind::Other,
+        // 416 means the file is smaller than the manifest says; anything
+        // else is an answer this client does not expect.
+        _ => io::ErrorKind::InvalidData,
+    };
+    io::Error::new(kind, format!("the server answered HTTP {status}"))
 }
 
 fn set_protocols(session: &Handle, protocols: u32) -> bool {
@@ -269,7 +316,7 @@ fn readable(error: io::Error) -> io::Error {
     let (kind, text) = match code as u32 {
         ERROR_WINHTTP_TIMEOUT => (io::ErrorKind::TimedOut, "the server did not answer in time"),
         ERROR_WINHTTP_NAME_NOT_RESOLVED => (
-            io::ErrorKind::NotFound,
+            io::ErrorKind::HostUnreachable,
             "the server's name could not be found",
         ),
         ERROR_WINHTTP_CANNOT_CONNECT => (
@@ -368,11 +415,24 @@ impl Target {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
     use std::path::PathBuf;
 
-    use super::{Target, WinHttpFetcher, readable};
-    use crate::manifest::HttpsUrl;
-    use crate::session::{Fetcher, sha256_of};
+    use super::{Target, WinHttpFetcher, parse_content_range, readable, status_error};
+    use crate::download::{Fetcher, fetch_file};
+    use crate::log::Log;
+    use crate::manifest::{Download, HttpsUrl, Sha256};
+    use crate::session::sha256_of;
+
+    /// This repository's licence, which the network tests download.
+    const LICENSE: &[u8] = include_bytes!("../../../../LICENSE");
+    const LICENSE_SHA256: &str = "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986";
+    const LICENSE_URL: &str =
+        "https://raw.githubusercontent.com/monikapurpl3/redist-unified/main/LICENSE";
+    const MISSING_URL: &str =
+        "https://raw.githubusercontent.com/monikapurpl3/redist-unified/main/no-such-file";
+    /// github.com answers with a redirect to raw.githubusercontent.com.
+    const REDIRECT_URL: &str = "https://github.com/monikapurpl3/redist-unified/raw/main/LICENSE";
 
     fn url(text: &str) -> HttpsUrl {
         HttpsUrl::try_from(text.to_owned()).unwrap()
@@ -396,19 +456,49 @@ mod tests {
 
     #[test]
     fn winhttp_errors_are_put_in_words() {
-        let error = readable(std::io::Error::from_raw_os_error(12007));
+        let error = readable(io::Error::from_raw_os_error(12007));
         assert_eq!(
             error.to_string(),
             "the server's name could not be found (WinHTTP error 12007)"
         );
+        // A name that does not resolve may resolve on the next try.
+        assert_eq!(error.kind(), io::ErrorKind::HostUnreachable);
         assert_eq!(
-            readable(std::io::Error::from_raw_os_error(12002)).kind(),
-            std::io::ErrorKind::TimedOut
+            readable(io::Error::from_raw_os_error(12002)).kind(),
+            io::ErrorKind::TimedOut
         );
         // Other errors keep Windows' own message.
         assert_eq!(
-            readable(std::io::Error::from_raw_os_error(5)).raw_os_error(),
+            readable(io::Error::from_raw_os_error(5)).raw_os_error(),
             Some(5)
+        );
+    }
+
+    #[test]
+    fn content_ranges_and_statuses() {
+        assert_eq!(
+            parse_content_range("bytes 0-99/35149"),
+            Some((0, 99, 35149))
+        );
+        assert_eq!(parse_content_range(" bytes 5-9/10 "), Some((5, 9, 10)));
+        for bad in [
+            "",
+            "bytes */10",
+            "bytes 0-9",
+            "items 0-9/10",
+            "bytes a-9/10",
+        ] {
+            assert_eq!(parse_content_range(bad), None, "{bad:?}");
+        }
+        // The kind tells the download engine whether to try again.
+        assert_eq!(status_error(404).kind(), io::ErrorKind::NotFound);
+        assert_eq!(status_error(403).kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(status_error(503).kind(), io::ErrorKind::Other);
+        assert_eq!(status_error(429).kind(), io::ErrorKind::Other);
+        assert_eq!(status_error(416).kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            status_error(404).to_string(),
+            "the server answered HTTP 404"
         );
     }
 
@@ -430,62 +520,74 @@ mod tests {
         }
     }
 
+    fn license_from(urls: &[&str]) -> Download {
+        Download {
+            urls: urls.iter().map(|u| url(u)).collect(),
+            size: LICENSE.len() as u64,
+            sha256: Sha256::try_from(LICENSE_SHA256.to_owned()).unwrap(),
+        }
+    }
+
+    fn fetch_license(urls: &[&str], name: &str) -> io::Result<Vec<u8>> {
+        let fetcher = WinHttpFetcher::new().unwrap();
+        let dest = Scratch::new(name);
+        let log = Log::new(io::sink());
+        fetch_file(&fetcher, &license_from(urls), &dest.0, &log, name, &|_| {})?;
+        assert_eq!(sha256_of(&dest.0).unwrap().to_string(), LICENSE_SHA256);
+        std::fs::read(&dest.0)
+    }
+
+    fn fetch_range(url_text: &str, range: std::ops::Range<u64>, size: u64) -> io::Result<Vec<u8>> {
+        let fetcher = WinHttpFetcher::new().unwrap();
+        let mut bytes = Vec::new();
+        fetcher.fetch(&url(url_text), range, size, &mut |chunk| {
+            bytes.extend_from_slice(chunk);
+            Ok(())
+        })?;
+        Ok(bytes)
+    }
+
     // These reach the network (this project's own repository on GitHub),
     // so they only run when asked: cargo test -- --ignored
 
     #[test]
     #[ignore = "needs the network"]
     fn downloads_a_file() {
-        let fetcher = WinHttpFetcher::new().unwrap();
-        let dest = Scratch::new("license");
-        let calls = std::cell::Cell::new(0);
-        fetcher
-            .fetch(
-                &url("https://raw.githubusercontent.com/monikapurpl3/redist-unified/main/LICENSE"),
-                &dest.0,
-                &|_, _| calls.set(calls.get() + 1),
-            )
-            .unwrap();
-        // The GPL-3.0 text, as committed.
+        assert_eq!(fetch_license(&[LICENSE_URL], "license").unwrap(), LICENSE);
+    }
+
+    #[test]
+    #[ignore = "needs the network"]
+    fn downloads_a_range() {
+        let size = LICENSE.len() as u64;
         assert_eq!(
-            sha256_of(&dest.0).unwrap().to_string(),
-            "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+            fetch_range(LICENSE_URL, 1000..1100, size).unwrap(),
+            &LICENSE[1000..1100]
         );
-        assert!(calls.get() >= 2);
+        // A file of another size than expected is refused.
+        let error = fetch_range(LICENSE_URL, 0..10, size + 1).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            error.to_string().contains(&format!("{size} bytes")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    #[ignore = "needs the network"]
+    fn a_missing_mirror_is_passed_over() {
+        let error = fetch_range(MISSING_URL, 0..10, 10).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("HTTP 404"), "{error}");
+        assert_eq!(
+            fetch_license(&[MISSING_URL, LICENSE_URL], "mirrors").unwrap(),
+            LICENSE
+        );
     }
 
     #[test]
     #[ignore = "needs the network"]
     fn redirects_are_followed() {
-        let fetcher = WinHttpFetcher::new().unwrap();
-        let dest = Scratch::new("redirect");
-        // github.com answers with a redirect to raw.githubusercontent.com.
-        fetcher
-            .fetch(
-                &url("https://github.com/monikapurpl3/redist-unified/raw/main/LICENSE"),
-                &dest.0,
-                &|_, _| {},
-            )
-            .unwrap();
-        assert_eq!(
-            sha256_of(&dest.0).unwrap().to_string(),
-            "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
-        );
-    }
-
-    #[test]
-    #[ignore = "needs the network"]
-    fn a_missing_file_is_an_error_and_leaves_nothing() {
-        let fetcher = WinHttpFetcher::new().unwrap();
-        let dest = Scratch::new("missing");
-        let error = fetcher
-            .fetch(
-                &url("https://raw.githubusercontent.com/monikapurpl3/redist-unified/main/no-such-file"),
-                &dest.0,
-                &|_, _| {},
-            )
-            .unwrap_err();
-        assert!(error.to_string().contains("HTTP 404"), "{error}");
-        assert!(!dest.0.exists());
+        assert_eq!(fetch_license(&[REDIRECT_URL], "redirect").unwrap(), LICENSE);
     }
 }

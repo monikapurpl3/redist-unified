@@ -1,7 +1,8 @@
 //! One run of the installer.
 //!
 //! 1. Detect which components that belong on this machine are missing.
-//! 2. Download those in parallel, and check each file's SHA-256 on disk.
+//! 2. Download those in parallel, each from its mirrors and in parts (see
+//!    [`download`](crate::download)), and check each file's SHA-256 on disk.
 //! 3. Install them one at a time, in manifest order (Windows Installer runs
 //!    one installation at a time).
 //! 4. Check with detection that each installation took.
@@ -24,10 +25,10 @@ use std::time::Duration;
 use sha2::Digest;
 
 use crate::detection::{self, DetectError, Machine};
+pub use crate::download::Fetcher;
+use crate::download::fetch_file;
 use crate::log::Log;
-use crate::manifest::{
-    Component, Download, ExitOutcome, HttpsUrl, Installer, KnownFolder, Manifest, Sha256,
-};
+use crate::manifest::{Component, Download, ExitOutcome, Installer, KnownFolder, Manifest, Sha256};
 
 /// How often an installer is tried while another installation is running.
 pub const BUSY_ATTEMPTS: u32 = 10;
@@ -37,18 +38,6 @@ pub const BUSY_WAIT: Duration = Duration::from_secs(30);
 
 /// How many downloads run at once.
 pub const PARALLEL_DOWNLOADS: usize = 4;
-
-/// Downloads files.
-pub trait Fetcher: Sync {
-    /// Downloads `url` into the new file `dest`. Calls `progress` with the
-    /// bytes received so far and, if the server says, the total.
-    fn fetch(
-        &self,
-        url: &HttpsUrl,
-        dest: &Path,
-        progress: &dyn Fn(u64, Option<u64>),
-    ) -> io::Result<()>;
-}
 
 /// Runs installers.
 pub trait Runner {
@@ -75,11 +64,11 @@ pub enum Event<'a> {
     },
     /// Downloads start: `count` files.
     Downloading { count: usize },
-    /// Part of a download arrived.
+    /// Part of a download arrived: `received` of `total` bytes.
     Progress {
         component: &'a Component,
         received: u64,
-        total: Option<u64>,
+        total: u64,
     },
     /// A download finished and its hash matched.
     Downloaded { component: &'a Component },
@@ -571,11 +560,13 @@ fn fetch_one(
         _ => "exe",
     };
     let dest = dir.join(format!("{}.{extension}", component.id));
+    let mirrors: Vec<&str> = download.urls.iter().map(|url| url.as_str()).collect();
     log.line(format_args!(
-        "{}: downloading {} to {}",
+        "{}: downloading {} bytes to {} from {}",
         component.id,
-        download.url,
-        dest.display()
+        download.size,
+        dest.display(),
+        mirrors.join(", then ")
     ));
     let failed = |source: io::Error| {
         log.line(format_args!("{}: download failed: {source}", component.id));
@@ -584,15 +575,14 @@ fn fetch_one(
             source,
         }
     };
-    fetcher
-        .fetch(&download.url, &dest, &|received, total| {
-            reporter.report(Event::Progress {
-                component,
-                received,
-                total,
-            });
-        })
-        .map_err(failed)?;
+    let progress = |received| {
+        reporter.report(Event::Progress {
+            component,
+            received,
+            total: download.size,
+        });
+    };
+    fetch_file(fetcher, download, &dest, log, &component.id, &progress).map_err(failed)?;
     let actual = sha256_of(&dest).map_err(failed)?;
     if actual != download.sha256 {
         log.line(format_args!(

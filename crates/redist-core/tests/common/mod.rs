@@ -1,6 +1,6 @@
 //! The fixture, a fake machine, and helpers shared by the integration tests.
 //!
-//! The fixture's URLs and hashes are dummies. Its silent arguments and
+//! The fixture's URLs, sizes and hashes are dummies. Its silent arguments and
 //! detection values only exercise the code: none of them has been checked
 //! against the real installers, so do not copy them into a real manifest.
 

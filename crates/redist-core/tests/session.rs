@@ -5,6 +5,7 @@ mod common;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -14,6 +15,7 @@ use common::{
     with_vc, x64,
 };
 use redist_core::detection::RegistryValue;
+use redist_core::download::TRIES_PER_MIRROR;
 use redist_core::log::Log;
 use redist_core::manifest::{HttpsUrl, Manifest, RegistryView};
 use redist_core::session::{
@@ -37,10 +39,12 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// The fixture, with each download's hash set to its fake payload's.
+/// The fixture, with each download's size and hash set to its fake
+/// payload's.
 fn manifest_with(edit: impl FnOnce(&mut serde_json::Value)) -> Manifest {
     parse_edited(|m| {
         for index in [VC_X64, VC_X86, DIRECTX, DOTNET] {
+            component(m, index)["size"] = json!(payload(index).len());
             component(m, index)["sha256"] = json!(sha256_hex(&payload(index)));
         }
         edit(m);
@@ -52,7 +56,8 @@ fn manifest() -> Manifest {
     manifest_with(|_| {})
 }
 
-/// Serves `payload` for each fixture URL, or fails for the ones in `fail`.
+/// Serves `payload` from every mirror of each fixture download, or times out
+/// for the URLs in `fail`. Never waits.
 struct FakeFetcher {
     files: HashMap<String, Vec<u8>>,
     fail: Vec<String>,
@@ -61,16 +66,12 @@ struct FakeFetcher {
 
 impl FakeFetcher {
     fn new(manifest: &Manifest) -> Self {
-        let files = manifest
-            .components
-            .iter()
-            .enumerate()
-            .filter_map(|(index, c)| {
-                c.download
-                    .as_ref()
-                    .map(|d| (d.url.as_str().to_owned(), payload(index)))
-            })
-            .collect();
+        let mut files = HashMap::new();
+        for (index, component) in manifest.components.iter().enumerate() {
+            for url in component.download.iter().flat_map(|d| &d.urls) {
+                files.insert(url.as_str().to_owned(), payload(index));
+            }
+        }
         FakeFetcher {
             files,
             fail: Vec::new(),
@@ -78,10 +79,18 @@ impl FakeFetcher {
         }
     }
 
+    /// Every request, by URL, sorted.
     fn fetched(&self) -> Vec<String> {
         let mut fetched = self.fetched.lock().unwrap().clone();
         fetched.sort();
         fetched
+    }
+
+    /// The URLs requested at least once.
+    fn urls(&self) -> Vec<String> {
+        let mut urls = self.fetched();
+        urls.dedup();
+        urls
     }
 }
 
@@ -89,20 +98,22 @@ impl Fetcher for FakeFetcher {
     fn fetch(
         &self,
         url: &HttpsUrl,
-        dest: &Path,
-        progress: &dyn Fn(u64, Option<u64>),
+        range: Range<u64>,
+        size: u64,
+        sink: &mut dyn FnMut(&[u8]) -> io::Result<()>,
     ) -> io::Result<()> {
         self.fetched.lock().unwrap().push(url.as_str().to_owned());
         if self.fail.iter().any(|f| f == url.as_str()) {
             return Err(io::Error::new(io::ErrorKind::TimedOut, "timed out"));
         }
         let bytes = &self.files[url.as_str()];
-        let total = bytes.len() as u64;
-        progress(0, Some(total));
-        std::fs::File::create_new(dest)?.write_all(bytes)?;
-        progress(total, Some(total));
-        Ok(())
+        if bytes.len() as u64 != size {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "wrong size"));
+        }
+        sink(&bytes[range.start as usize..range.end as usize])
     }
+
+    fn wait(&self, _: Duration) {}
 }
 
 type Effect<'m> = Box<dyn Fn(&FakeMachine) + 'm>;
@@ -633,14 +644,11 @@ fn a_wrong_download_is_deleted_and_never_run() {
     let manifest = manifest();
     let machine = x64();
     let mut fetcher = FakeFetcher::new(&manifest);
-    let url = manifest.components[DOTNET]
-        .download
-        .as_ref()
-        .unwrap()
-        .url
-        .as_str()
-        .to_owned();
-    fetcher.files.insert(url, b"something else".to_vec());
+    let url = mirror(&manifest, DOTNET, 0);
+    // Right size, wrong bytes.
+    let mut other = payload(DOTNET);
+    other.reverse();
+    fetcher.files.insert(url, other);
     let runner = working_installers(&machine);
     let work = WorkDir::new("hash");
 
@@ -670,15 +678,8 @@ fn a_failed_download_stops_the_run_before_installing() {
     let manifest = manifest();
     let machine = x64();
     let mut fetcher = FakeFetcher::new(&manifest);
-    fetcher.fail.push(
-        manifest.components[DIRECTX]
-            .download
-            .as_ref()
-            .unwrap()
-            .url
-            .as_str()
-            .to_owned(),
-    );
+    let directx = mirror(&manifest, DIRECTX, 0);
+    fetcher.fail.push(directx.clone());
     let runner = working_installers(&machine);
     let work = WorkDir::new("download");
 
@@ -694,9 +695,53 @@ fn a_failed_download_stops_the_run_before_installing() {
     .unwrap_err();
     assert!(matches!(error, SessionError::Download { .. }));
     assert!(error.to_string().contains("Could not download DirectX"));
-    // The other downloads still ran; no installer did.
-    assert_eq!(fetcher.fetched().len(), 4);
+    assert!(error.to_string().contains(&directx), "{error}");
+    // Its only mirror got its tries; the other downloads still ran; no
+    // installer did.
+    let tries = fetcher
+        .fetched()
+        .iter()
+        .filter(|url| **url == directx)
+        .count();
+    assert_eq!(tries, TRIES_PER_MIRROR as usize);
+    assert_eq!(fetcher.urls().len(), 4);
     assert!(runner.programs().is_empty());
+}
+
+#[test]
+fn a_failing_mirror_hands_over_to_the_next() {
+    let manifest = manifest();
+    let machine = x64();
+    let mut fetcher = FakeFetcher::new(&manifest);
+    let (first, second) = (mirror(&manifest, DOTNET, 0), mirror(&manifest, DOTNET, 1));
+    fetcher.fail.push(first.clone());
+    let runner = working_installers(&machine);
+    let work = WorkDir::new("mirrors");
+    let options = Options {
+        only: Some("dotnet-desktop-8-x64"),
+        ..Options::default()
+    };
+
+    let run = run(&manifest, &machine, &fetcher, &runner, &work, options);
+    assert_eq!(
+        outcomes(&run.result.unwrap()),
+        [("dotnet-desktop-8-x64", Outcome::Installed)]
+    );
+    let fetched = fetcher.fetched();
+    assert_eq!(
+        fetched.iter().filter(|url| **url == first).count(),
+        TRIES_PER_MIRROR as usize
+    );
+    assert_eq!(fetched.iter().filter(|url| **url == second).count(), 1);
+    assert!(run.log.contains(&format!("from {first}, then {second}")));
+    assert!(run.log.contains("timed out"));
+}
+
+/// The URL of a component's mirror.
+fn mirror(manifest: &Manifest, index: usize, mirror: usize) -> String {
+    manifest.components[index].download.as_ref().unwrap().urls[mirror]
+        .as_str()
+        .to_owned()
 }
 
 #[test]

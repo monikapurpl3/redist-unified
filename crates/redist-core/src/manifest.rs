@@ -131,7 +131,8 @@ struct RawComponent {
     name: String,
     arch: Arch,
     version: Version,
-    url: Option<HttpsUrl>,
+    urls: Option<Vec<HttpsUrl>>,
+    size: Option<u64>,
     sha256: Option<Sha256>,
     installer: Installer,
     detect: Detect,
@@ -164,13 +165,18 @@ impl TryFrom<RawComponent> for Component {
             return Err(fail("the name is empty or has control characters".into()));
         }
 
-        let download = match (raw.installer.downloads(), raw.url, raw.sha256) {
-            (true, Some(url), Some(sha256)) => Some(Download { url, sha256 }),
-            (true, _, _) => return Err(fail("its installer needs url and sha256".into())),
-            (false, None, None) => None,
-            (false, _, _) => {
+        let download = match (raw.installer.downloads(), raw.urls, raw.size, raw.sha256) {
+            (true, Some(urls), Some(size), Some(sha256)) => {
+                Some(Download::new(urls, size, sha256).map_err(fail)?)
+            }
+            (true, ..) => {
+                return Err(fail("its installer needs urls, size and sha256".into()));
+            }
+            (false, None, None, None) => None,
+            (false, ..) => {
                 return Err(fail(
-                    "a windows_feature installer downloads nothing; drop url and sha256".into(),
+                    "a windows_feature installer downloads nothing; drop urls, size and sha256"
+                        .into(),
                 ));
             }
         };
@@ -202,13 +208,35 @@ impl TryFrom<RawComponent> for Component {
     }
 }
 
-/// Where to download a component, and the hash it must have.
+/// Where to download a component, and what it must be: a metalink in
+/// miniature.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Download {
-    /// The installer's URL.
-    pub url: HttpsUrl,
-    /// Its SHA-256, checked before it runs.
+    /// Mirrors of the same file, in order of preference. Never empty, no
+    /// duplicates. Every part of the file comes from the first one that
+    /// works; the others are only for when it fails.
+    pub urls: Vec<HttpsUrl>,
+    /// Its exact size in bytes. Never zero.
+    pub size: u64,
+    /// Its SHA-256, checked before it runs, whichever mirrors it came from.
     pub sha256: Sha256,
+}
+
+impl Download {
+    fn new(urls: Vec<HttpsUrl>, size: u64, sha256: Sha256) -> Result<Download, String> {
+        if urls.is_empty() {
+            return Err("urls needs at least one URL".into());
+        }
+        for (i, url) in urls.iter().enumerate() {
+            if urls[..i].contains(url) {
+                return Err(format!("the URL {url} is listed twice"));
+            }
+        }
+        if size == 0 {
+            return Err("size must be at least 1".into());
+        }
+        Ok(Download { urls, size, sha256 })
+    }
 }
 
 /// The architecture a component installs for.

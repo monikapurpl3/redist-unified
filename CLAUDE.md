@@ -37,7 +37,8 @@ cargo test --locked                                  # every crate
 cargo test -p redist-core <name>                     # tests whose name contains <name>
 cargo test -p redist-core --test manifest            # one integration test file
 cargo test -p redist-core --lib windows              # the real Windows backend (read-only)
-cargo test -p redist-core --lib -- --ignored         # downloads from this repo on GitHub
+cargo test -p redist-core --test download            # the download engine, against a fake server
+cargo test -p redist-core --lib -- --ignored         # real downloads from this repo on GitHub
 cargo clippy --all-targets --locked -- -D warnings
 cargo fmt --check
 ```
@@ -174,7 +175,15 @@ The schema lives in `crates/redist-core/src/manifest.rs` and the modules under
   - `extract`, a self-extractor with `{dir}` in `extract_args`, then `run`
     inside that folder (DirectX).
   - `windows_feature` (DISM, NetFx3). It is the only installer without
-    `url` and `sha256`.
+    `urls`, `size` and `sha256`.
+- **Downloads are metalinks in miniature.**
+  - `urls` lists mirrors of one file, in order of preference: never empty,
+    no duplicates.
+  - `size` is its exact size in bytes. The client splits files by it, and
+    refuses any server whose file is another size.
+  - `sha256` covers the file whichever mirrors its parts came from.
+  - Only .NET may have a mirror besides Microsoft's own URL (see the
+    Invariants).
 - **Arch:** `x86`, `x64` or `arm64`, plus `any` for components that are not tied
   to one architecture (DirectX, Windows features).
 - **Exit codes:** `exit_ok`, `exit_reboot`, `exit_already` and `exit_retry`
@@ -185,7 +194,7 @@ The schema lives in `crates/redist-core/src/manifest.rs` and the modules under
 - **What `parse` leaves out:** it does not verify the signature and does not
   decide acceptance (replay protection, `min_client`). Both belong to
   milestone 4.
-- **The fixture is not real data:** its URLs and hashes are dummies, and its
+- **The fixture is not real data:** its URLs, sizes and hashes are dummies, and its
   silent arguments and detection values have not been checked against the real
   installers.
 - A `dotnet_runtime` rule needs a concrete arch to find dotnet, so it is refused
@@ -234,7 +243,8 @@ with a `FakeMachine`, which ignores case like Windows does.
 
 `src/session.rs` runs the whole flow:
 1. Detect.
-2. Download every missing component, four at a time.
+2. Download every missing component, four at a time, each through the engine
+   in `src/download.rs` (below).
 3. Install them one by one, in manifest order.
 4. Detect again after each one that reports plain success.
 
@@ -249,6 +259,31 @@ can "install" things.
     any, is reported, and nothing is installed.
 - **The SHA-256 is checked on the file on disk,** which is the one that will
   run. A mismatch is deleted and never run.
+- **The download engine** (`src/download.rs`) works like aria2 with a
+  metalink, inside the client. `tests/download.rs` drives it with a fake
+  server whose mirrors misbehave on purpose.
+  - **Parts.** A file of at least 2 MiB is split into up to 4 parts of at
+    least 1 MiB, fetched in parallel. With 4 files at once, that is at most 16
+    connections.
+  - **Mirrors are a priority list, not load-sharing.** Every part starts on
+    the first URL, and moves to the next one only when its mirror fails. This
+    keeps load off fallbacks such as a small home server.
+  - **Resume.** A part that stops early continues from its last byte, using
+    a `Range` request.
+  - **When to move on.** After 3 tries in a row that bring no new bytes, with
+    waits of 1, 2 and 4 seconds, a part moves to the next mirror. A try that
+    brought bytes starts the count again.
+  - **Final errors.** The error kinds `NotFound`, `PermissionDenied`,
+    `InvalidData` and `Unsupported` move a part to the next mirror at once.
+    The `Fetcher` reports HTTP statuses, size mismatches and "no ranges" with
+    these kinds.
+  - **No ranges.** A mirror that ignores ranges is skipped for parts. If no
+    mirror supports them, the whole file is fetched in one piece.
+  - **Limits.** Bytes past a part's end are never written. A failed download
+    leaves no file, and the destination must be new.
+  - **Not yet.** Resuming across runs needs a download cache that outlives
+    the run's private work folder. That cache would need the same protection
+    as the work folder, so it is left for later.
 - **Exit codes:**
   - 1618 waits 30 seconds and tries again, up to 10 times.
   - 3010 and 1641 skip the detection after installing, because what they
@@ -265,9 +300,13 @@ can "install" things.
     that do not come from the manifest.
 
 The Windows backend lives in `src/windows/`:
-- **`WinHttpFetcher`** downloads through WinHTTP.
+- **`WinHttpFetcher`** fetches byte ranges through WinHTTP.
   - It uses the system proxy and certificate store and only TLS 1.2 and 1.3.
-    It follows redirects, but never from HTTPS to HTTP.
+    It follows redirects, but never from HTTPS to HTTP, and the `Range`
+    header survives the redirect.
+  - It accepts a 206 only with the `Content-Range` it asked for and the
+    manifest's size. It accepts a 200 only when it asked for the whole file;
+    any other 200 is an `Unsupported` error.
   - Rust cannot print WinHTTP's error messages, which are not in the system
     message table, so `readable` puts them into words.
   - WinHTTP replaced the plan's `reqwest`. `reqwest` 0.13 needs `aws-lc-rs`,

@@ -191,7 +191,7 @@ mod tests {
             line(Event::Progress {
                 component: a,
                 received: 1,
-                total: None
+                total: 1
             }),
             None
         );
