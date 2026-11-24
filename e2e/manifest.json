@@ -1,0 +1,190 @@
+{
+  "schema": 1,
+  "version": 1,
+  "issued": "2026-11-24T12:00:00Z",
+  "min_client": "0.1.0",
+  "latest_client": {
+    "version": "0.1.0",
+    "url": "https://github.com/monikapurpl3/redist-unified/releases"
+  },
+  "components": [
+    {
+      "id": "vcredist-14-x64",
+      "name": "Visual C++ v14 Redistributable (x64)",
+      "arch": "x64",
+      "version": "14.52.37029.0",
+      "urls": ["https://download.visualstudio.microsoft.com/download/pr/78d061c5-9ef3-42ab-98ed-3309d1095dc4/9C02C9ED120F671B900E6B9471D890E3B2414117A7E53F4AE2E855466FA2B7C9/VC_redist.x64.exe"],
+      "size": 18863624,
+      "sha256": "9c02c9ed120f671b900e6b9471d890e3b2414117a7e53f4ae2e855466fa2b7c9",
+      "installer": { "type": "exe", "args": ["/install", "/quiet", "/norestart"] },
+      "detect": {
+        "type": "all",
+        "rules": [
+          { "type": "registry", "key": "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64", "view": "64", "value": "Installed", "equals": 1 },
+          { "type": "registry", "key": "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64", "view": "64", "value": "Bld", "min": 37029 }
+        ]
+      },
+      "exit_ok": [0],
+      "exit_reboot": [3010, 1641],
+      "exit_already": [1638],
+      "exit_retry": [1618]
+    },
+    {
+      "id": "vcredist-14-x86",
+      "name": "Visual C++ v14 Redistributable (x86)",
+      "arch": "x86",
+      "version": "14.52.37029.0",
+      "urls": ["https://download.visualstudio.microsoft.com/download/pr/78d061c5-9ef3-42ab-98ed-3309d1095dc4/7B0117E6E20E9E349029C000A8A2715A52CF37C15B6BB697B2908E8BC7066CDF/VC_redist.x86.exe"],
+      "size": 6919464,
+      "sha256": "7b0117e6e20e9e349029c000a8a2715a52cf37c15b6bb697b2908e8bc7066cdf",
+      "installer": { "type": "exe", "args": ["/install", "/quiet", "/norestart"] },
+      "detect": {
+        "type": "all",
+        "rules": [
+          { "type": "registry", "key": "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x86", "view": "32", "value": "Installed", "equals": 1 },
+          { "type": "registry", "key": "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x86", "view": "32", "value": "Bld", "min": 37029 }
+        ]
+      },
+      "exit_ok": [0],
+      "exit_reboot": [3010, 1641],
+      "exit_already": [1638],
+      "exit_retry": [1618]
+    },
+    {
+      "id": "vcredist-14-arm64",
+      "name": "Visual C++ v14 Redistributable (ARM64)",
+      "arch": "arm64",
+      "version": "14.52.37029.0",
+      "urls": ["https://download.visualstudio.microsoft.com/download/pr/78d061c5-9ef3-42ab-98ed-3309d1095dc4/3C81BCF5B06156858362400D7066F65ECE38E8ACCB5E687FC65BEF5735F31FFC/VC_redist.arm64.exe"],
+      "size": 11967280,
+      "sha256": "3c81bcf5b06156858362400d7066f65ece38e8accb5e687fc65bef5735f31ffc",
+      "installer": { "type": "exe", "args": ["/install", "/quiet", "/norestart"] },
+      "detect": {
+        "type": "all",
+        "rules": [
+          { "type": "registry", "key": "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\arm64", "view": "64", "value": "Installed", "equals": 1 },
+          { "type": "registry", "key": "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\arm64", "view": "64", "value": "Bld", "min": 37029 }
+        ]
+      },
+      "exit_ok": [0],
+      "exit_reboot": [3010, 1641],
+      "exit_already": [1638],
+      "exit_retry": [1618]
+    },
+    {
+      "id": "vcredist-2013-x64",
+      "name": "Visual C++ 2013 Redistributable (x64)",
+      "arch": "x64",
+      "version": "12.0.40664.0",
+      "urls": ["https://download.visualstudio.microsoft.com/download/pr/10912041/cee5d6bca2ddbcd039da727bf4acb48a/vcredist_x64.exe"],
+      "size": 7200744,
+      "sha256": "a4bba7701e355ae29c403431f871a537897c363e215cafe706615e270984f17c",
+      "installer": { "type": "exe", "args": ["/install", "/quiet", "/norestart"] },
+      "detect": {
+        "type": "all",
+        "rules": [
+          { "type": "registry", "key": "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\12.0\\VC\\Runtimes\\x64", "view": "32", "value": "Installed", "equals": 1 },
+          { "type": "registry", "key": "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\12.0\\VC\\Runtimes\\x64", "view": "32", "value": "Bld", "min": 40664 }
+        ]
+      },
+      "exit_ok": [0],
+      "exit_reboot": [3010, 1641],
+      "exit_already": [1638],
+      "exit_retry": [1618]
+    },
+    {
+      "id": "vcredist-2013-x86",
+      "name": "Visual C++ 2013 Redistributable (x86)",
+      "arch": "x86",
+      "version": "12.0.40664.0",
+      "urls": ["https://download.visualstudio.microsoft.com/download/pr/10912113/5da66ddebb0ad32ebd4b922fd82e8e25/vcredist_x86.exe"],
+      "size": 6510136,
+      "sha256": "53b605d1100ab0a88b867447bbf9274b5938125024ba01f5105a9e178a3dcdbd",
+      "installer": { "type": "exe", "args": ["/install", "/quiet", "/norestart"] },
+      "detect": {
+        "type": "all",
+        "rules": [
+          { "type": "registry", "key": "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\12.0\\VC\\Runtimes\\x86", "view": "32", "value": "Installed", "equals": 1 },
+          { "type": "registry", "key": "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\12.0\\VC\\Runtimes\\x86", "view": "32", "value": "Bld", "min": 40664 }
+        ]
+      },
+      "exit_ok": [0],
+      "exit_reboot": [3010, 1641],
+      "exit_already": [1638],
+      "exit_retry": [1618]
+    },
+    {
+      "id": "directx-jun2010",
+      "name": "DirectX End-User Runtime (June 2010)",
+      "arch": "any",
+      "version": "9.29.1974",
+      "urls": ["https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/directx_Jun2010_redist.exe"],
+      "size": 100275120,
+      "sha256": "053f76dcbb28802e23341b6a787e3b0791c0fa5c8d4d011b1044172dbf89c73b",
+      "installer": {
+        "type": "extract",
+        "extract_args": ["/Q", "/T:{dir}"],
+        "run": "DXSETUP.exe",
+        "args": ["/silent"]
+      },
+      "detect": {
+        "type": "all",
+        "rules": [
+          { "type": "file", "path": "{system32}\\d3dx9_43.dll" },
+          { "type": "file", "path": "{syswow64}\\d3dx9_43.dll" },
+          { "type": "file", "path": "{system32}\\xaudio2_7.dll" },
+          { "type": "file", "path": "{syswow64}\\xaudio2_7.dll" }
+        ]
+      },
+      "exit_ok": [0],
+      "exit_reboot": [],
+      "exit_already": [],
+      "exit_retry": []
+    },
+    {
+      "id": "dotnet-desktop-11-x64",
+      "name": ".NET 11 Desktop Runtime (x64)",
+      "arch": "x64",
+      "version": "11.0.0",
+      "urls": ["https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/11.0.0/windowsdesktop-runtime-11.0.0-win-x64.exe"],
+      "size": 62332904,
+      "sha256": "8c0eafd5eb480e4603aa63619aeffe378157e07b2f0f8dd3db9b5226ac890d4a",
+      "installer": { "type": "exe", "args": ["/install", "/quiet", "/norestart"] },
+      "detect": { "type": "dotnet_runtime", "framework": "Microsoft.WindowsDesktop.App", "min": "11.0.0" },
+      "exit_ok": [0],
+      "exit_reboot": [3010, 1641],
+      "exit_already": [1638],
+      "exit_retry": [1618]
+    },
+    {
+      "id": "dotnet-desktop-11-x86",
+      "name": ".NET 11 Desktop Runtime (x86)",
+      "arch": "x86",
+      "version": "11.0.0",
+      "urls": ["https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/11.0.0/windowsdesktop-runtime-11.0.0-win-x86.exe"],
+      "size": 57705144,
+      "sha256": "ddae4213e840526ed58ef5a59288ffdbea1eb5f703de5f68e295ba528780b0fe",
+      "installer": { "type": "exe", "args": ["/install", "/quiet", "/norestart"] },
+      "detect": { "type": "dotnet_runtime", "framework": "Microsoft.WindowsDesktop.App", "min": "11.0.0" },
+      "exit_ok": [0],
+      "exit_reboot": [3010, 1641],
+      "exit_already": [1638],
+      "exit_retry": [1618]
+    },
+    {
+      "id": "dotnet-desktop-11-arm64",
+      "name": ".NET 11 Desktop Runtime (ARM64)",
+      "arch": "arm64",
+      "version": "11.0.0",
+      "urls": ["https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/11.0.0/windowsdesktop-runtime-11.0.0-win-arm64.exe"],
+      "size": 56188120,
+      "sha256": "9537033d2522cca54110d4d1c0285eec240b95d308942b09ff650a820e42338e",
+      "installer": { "type": "exe", "args": ["/install", "/quiet", "/norestart"] },
+      "detect": { "type": "dotnet_runtime", "framework": "Microsoft.WindowsDesktop.App", "min": "11.0.0" },
+      "exit_ok": [0],
+      "exit_reboot": [3010, 1641],
+      "exit_already": [1638],
+      "exit_retry": [1618]
+    }
+  ]
+}

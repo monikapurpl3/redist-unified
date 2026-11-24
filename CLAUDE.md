@@ -13,8 +13,8 @@ part of the design.
 The milestones, in the maintainer's order:
 1. The manifest and detection library. Done.
 2. The CLI installer. It is built and tested against fakes, and real downloads
-   work. It has not installed anything for real yet, which needs a Windows VM
-   and a manifest with checked URLs, hashes and arguments.
+   work. CI (below) installs from a real manifest on throwaway x64 and ARM64
+   runners.
 3. The UI.
 4. The signed manifest.
 5. The publish pipeline.
@@ -39,12 +39,14 @@ cargo test -p redist-core --test manifest            # one integration test file
 cargo test -p redist-core --lib windows              # the real Windows backend (read-only)
 cargo test -p redist-core --test download            # the download engine, against a fake server
 cargo test -p redist-core --lib -- --ignored         # real downloads from this repo on GitHub
+cargo run -p redist-core --example detect -- e2e/manifest.json   # what its rules find here (read-only)
 cargo clippy --all-targets --locked -- -D warnings
 cargo fmt --check
 ```
 
 **Never start `redist.exe` on the development machine.** It requires
-administrator rights and installs runtimes, so test it in a VM.
+administrator rights and installs runtimes, so test it in a throwaway Windows
+(see the Invariants).
 - From an unelevated shell, `cargo run` fails with "requires elevation"
   (os error 740).
 - From PowerShell, even `redist.exe --help` raises a UAC prompt, because
@@ -323,6 +325,48 @@ The Windows backend lives in `src/windows/`:
   - The CLI deletes its subfolders at the end, and keeps the log and the
     installers' output.
 
+## CI and the e2e manifest
+
+`.github/workflows/ci.yml` runs on every push to `main` and on pull requests.
+- **Build and test**, on `windows-2025`:
+  - fmt, clippy, every test, and the network tests;
+  - release builds for x64 and ARM64;
+  - a check that neither exe imports the VC++ runtime, and that both ask for
+    administrator rights.
+- **Install**, on `windows-2025` (x64) and `windows-11-arm` (ARM64):
+  1. `redist.exe --check`
+  2. `redist.exe`
+  3. `redist.exe --check`, which must say "Nothing is missing."
+
+  The runners already have some runtimes, so this covers both real installs
+  and leaving alone what is there. Exit code 3010 skips the last check, since
+  the restart question gets no answer there and nothing restarts. The work
+  folders' logs are uploaded as `logs-x64` and `logs-arm64`.
+- **Actions** are pinned to commit SHAs, with the version in a comment.
+  Checkouts keep no credentials, and the workflow can only read.
+
+`e2e/manifest.json` is real data:
+- **What it holds:**
+  - VC++ v14 (x64, x86, ARM64), from `aka.ms/vc14`;
+  - VC++ 2013 (x64, x86), from `aka.ms/highdpimfc2013*`;
+  - DirectX June 2010;
+  - the .NET 11 Desktop Runtime (x64, x86, ARM64), from `releases.json`.
+- **Versioned URLs only:** the `aka.ms` links are resolved to Microsoft's
+  versioned URLs, because the short links change file when Microsoft
+  publishes a new version.
+- **Every installer was checked** before going in (2026-11-24):
+  - a valid Microsoft or .NET Authenticode signature;
+  - for .NET, the SHA-512 from `releases.json`;
+  - for VC++ v14, the SHA-256 embedded in its URL.
+- **Detection facts it relies on,** seen on a real machine:
+  - VC++ v14's x64 key is in the 64-bit registry view (and mirrored in the
+    32-bit one); its x86 key is only in the 32-bit view.
+  - **VC++ 2013 writes both its x64 and its x86 key only in the 32-bit view.**
+- **A test keeps it honest:** `tests/manifest.rs` makes it parse, and makes
+  every URL point at a `*.microsoft.com` server.
+- **The `detect` example** shows what any manifest's rules find on the
+  machine it runs on. It only reads, and needs no elevation.
+
 ## Invariants
 
 - Microsoft installers are never repacked or modified. By default the client
@@ -337,8 +381,11 @@ The Windows backend lives in `src/windows/`:
   manifest. The old VC++ packages (2005, 2008, 2010) use `/q`-style switches.
 - Exe signing happens only in GitHub Actions through SignPath Foundation. Local
   builds are unsigned dev builds.
-- The installer requires administrator rights and changes the system. Test it on
-  clean Windows 10 and 11 VMs, not on a development machine.
+- The installer requires administrator rights and changes the system. Test it
+  only in a throwaway Windows, never on a development machine, and never in
+  a VM: the maintainer does not want to maintain VMs (2026-11-24). Real installs
+  run on GitHub Actions' Windows runners (x64 and ARM64), which are discarded
+  after every job. Windows Sandbox can serve for local, by-hand checks.
 - Publishing anything (a release, the manifest) needs the maintainer's explicit
   yes, every time.
 

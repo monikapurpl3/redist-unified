@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Toolchain
+        # rust-toolchain.toml picks nightly with clippy and rustfmt.
+        run: |
+          rustup toolchain install
+          rustup target add aarch64-pc-windows-msvc
+          rustc --version
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Tests
+        # The runner is elevated, so the work-folder test makes a real one.
+        run: cargo test --locked
+
+      - name: Network tests
+        run: cargo test -p redist-core --lib --locked -- --ignored
+
+      - name: Build x64 and ARM64
+        run: |
+          cargo build --release --locked --target x86_64-pc-windows-msvc
+          cargo build --release --locked --target aarch64-pc-windows-msvc
+
+      - name: Check the exes
+        # No VC++ runtime imports (installing it is the client's job), and a
+        # manifest that asks for administrator rights.
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = & $vswhere -latest -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+          $failed = $false
+          foreach ($target in 'x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc') {
+            $exe = "target\$target\release\redist.exe"
+            $imports = & $dumpbin -nologo -dependents $exe | Select-String '\.dll' | ForEach-Object { $_.Line.Trim() }
+            "${target}: $($imports -join ', ')"
+            if ($imports -match 'vcruntime|api-ms-win-crt') { "::error::$exe imports the VC++ runtime"; $failed = $true }
+            $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($exe))
+            if (-not $text.Contains("level=""requireAdministrator""")) { "::error::$exe does not ask for administrator rights"; $failed = $true }
+          }
+          if ($failed) { exit 1 }
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: redist
+          path: |
+            target/x86_64-pc-windows-msvc/release/redist.exe
+            target/aarch64-pc-windows-msvc/release/redist.exe
+          if-no-files-found: error
+
+  install:
+    # Real installs from e2e/manifest.json, on runners that are thrown away
+    # after the job. The runners come with some runtimes already, so this
+    # checks both paths: installing what is missing, and leaving alone what
+    # is there.
+    name: Install (${{ matrix.arch }})
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - arch: arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: redist
+          path: build
+
+      - name: What is missing
+        run: |
+          & "build\${{ matrix.target }}\release\redist.exe" --manifest e2e\manifest.json --check | Tee-Object before.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install
+        id: install
+        # Exit code 3010 means installed, with a restart still to come. The
+        # restart question reads an empty answer here, so nothing restarts.
+        run: |
+          & "build\${{ matrix.target }}\release\redist.exe" --manifest e2e\manifest.json | Tee-Object install.txt
+          $code = $LASTEXITCODE
+          "exit code: $code"
+          "restart=$($code -eq 3010)" >> $env:GITHUB_OUTPUT
+          if ($code -notin 0, 3010) { exit $code }
+          exit 0
+
+      - name: Nothing is missing now
+        if: steps.install.outputs.restart != 'True'
+        run: |
+          & "build\${{ matrix.target }}\release\redist.exe" --manifest e2e\manifest.json --check | Tee-Object after.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Select-String -Path after.txt -SimpleMatch 'Nothing is missing.' -Quiet)) {
+            "::error::Something is still missing after installing"
+            exit 1
+          }
+
+      - name: Collect the logs
+        if: always()
+        run: |
+          New-Item -ItemType Directory logs | Out-Null
+          Copy-Item before.txt, install.txt, after.txt logs -ErrorAction SilentlyContinue
+          Get-ChildItem "$env:SystemRoot\Temp" -Directory -Filter 'redist-unified-*' |
+            ForEach-Object { Copy-Item $_.FullName "logs\$($_.Name)" -Recurse }
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: logs-${{ matrix.arch }}
+          path: logs

@@ -41,6 +41,26 @@ fn parsed_bld_rule(manifest: &Manifest) -> &RegistryRule {
     rule
 }
 
+/// The real manifest CI installs from, which has to keep parsing as the
+/// schema changes.
+#[test]
+fn the_e2e_manifest_parses() {
+    let manifest = Manifest::parse(include_bytes!("../../../e2e/manifest.json")).unwrap();
+    assert!(manifest.components.len() >= 9);
+    for component in &manifest.components {
+        let download = component.download.as_ref().unwrap();
+        for url in &download.urls {
+            let host = url.as_str().split('/').nth(2).unwrap();
+            // Only Microsoft's own download servers (see the Invariants).
+            assert!(
+                host.ends_with(".microsoft.com"),
+                "{}: {url} is not a Microsoft server",
+                component.id
+            );
+        }
+    }
+}
+
 #[test]
 fn the_fixture_parses() {
     let manifest = fixture();
