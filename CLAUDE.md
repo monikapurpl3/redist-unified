@@ -12,9 +12,10 @@ part of the design.
 
 The milestones, in the maintainer's order:
 1. The manifest and detection library. Done.
-2. The CLI installer. It is built and tested against fakes, and real downloads
-   work. CI (below) installs from a real manifest on throwaway x64 and ARM64
-   runners.
+2. The CLI installer. Done, as far as CI can show. It is tested against fakes,
+   and on throwaway x64 and ARM64 runners it really installs from a real
+   manifest (below). Not yet seen for real: a VC++ v14 or .NET install (the
+   runners already have both), and an installer that asks for a restart.
 3. The UI.
 4. The signed manifest.
 5. The publish pipeline.
@@ -344,6 +345,19 @@ The Windows backend lives in `src/windows/`:
   folders' logs are uploaded as `logs-x64` and `logs-arm64`.
 - **Actions** are pinned to commit SHAs, with the version in a comment.
   Checkouts keep no credentials, and the workflow can only read.
+- **The first green run** (2026-11-24, `0274a21`) behaved the same on both
+  runners:
+  - VC++ v14 and the .NET 11 Desktop Runtime were already there, and were left
+    alone.
+  - VC++ 2013 (x64, x86) and DirectX June 2010 were missing. They downloaded,
+    installed with exit code 0, and passed detection right after.
+  - The last check then said "Nothing is missing."
+
+  On ARM64 Windows 11, that includes the x64 and x86 packages and DirectX's
+  `System32` and `SysWOW64` file rules.
+- **Parts run in parallel,** so the order of requests in the download tests
+  varies. Assert on sorted ranges, or on the order requests really came in,
+  never on a sorted list's last element.
 
 `e2e/manifest.json` is real data:
 - **What it holds:**
