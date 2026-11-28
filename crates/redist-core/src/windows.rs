@@ -10,7 +10,9 @@ mod process;
 mod workdir;
 
 pub use http::WinHttpFetcher;
-pub use process::{INSTALL_TIMEOUT, ProcessRunner, console_is_ours};
+pub use process::{
+    INSTALL_TIMEOUT, ProcessRunner, console_is_ours, restart_windows, show_in_explorer,
+};
 pub use workdir::{create_work_dir, is_elevated};
 
 use std::ffi::{OsStr, OsString, c_void};

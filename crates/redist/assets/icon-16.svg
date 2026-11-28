@@ -1,0 +1,24 @@
+<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+ <!-- icon.svg redrawn for 16 px, on the pixel grid: there its 19-unit bars
+      are 1.5 px wide and faint. Here the bars are 2 px, the green cross lies
+      over the white one as in icon.svg, and the blur is a faint glow behind
+      crisp white bars. -->
+ <defs>
+  <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+   <feGaussianBlur stdDeviation="0.6"/>
+  </filter>
+ </defs>
+ <rect width="16" height="16" rx="3" fill="#000"/>
+ <g fill="#fff">
+  <g filter="url(#glow)" opacity="0.7">
+   <rect x="5" y="1" width="2" height="10"/>
+   <rect x="1" y="5" width="10" height="2"/>
+  </g>
+  <rect x="5" y="1" width="2" height="10"/>
+  <rect x="1" y="5" width="10" height="2"/>
+ </g>
+ <g fill="#007f3f">
+  <rect x="9" y="5" width="2" height="10"/>
+  <rect x="5" y="9" width="10" height="2"/>
+ </g>
+</svg>

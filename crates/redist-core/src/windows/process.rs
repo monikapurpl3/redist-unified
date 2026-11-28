@@ -1,7 +1,9 @@
-//! Running installers, and the console the client runs in.
+//! Running installers, the console the client runs in, and the few things it
+//! asks of Windows at the end: a restart, or showing the log.
 
 use std::fs::File;
 use std::io;
+use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -9,7 +11,8 @@ use std::time::Duration;
 
 use windows_sys::Win32::System::Console::GetConsoleProcessList;
 
-use super::run_hidden;
+use super::{known_folder_path, run_hidden};
+use crate::manifest::KnownFolder;
 use crate::session::Runner;
 
 /// How long an installer may run before it is stopped. .NET Framework 3.5
@@ -48,6 +51,30 @@ pub fn console_is_ours() -> bool {
     let mut ids = [0u32; 2];
     // SAFETY: ids has room for the two process ids asked for.
     unsafe { GetConsoleProcessList(ids.as_mut_ptr(), ids.len() as u32) == 1 }
+}
+
+/// Restarts Windows now, through System32's `shutdown.exe`.
+pub fn restart_windows() -> io::Result<()> {
+    let shutdown = known_folder_path(KnownFolder::System32)?.join("shutdown.exe");
+    let status = Command::new(shutdown).args(["/r", "/t", "0"]).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "shutdown.exe ended with {status}"
+        )))
+    }
+}
+
+/// Opens an Explorer window with `file` selected.
+pub fn show_in_explorer(file: &Path) -> io::Result<()> {
+    let explorer = known_folder_path(KnownFolder::Windows)?.join("explorer.exe");
+    // Explorer reads `/select,"<path>"` itself, so it gets the argument as
+    // written instead of std's quoting.
+    Command::new(explorer)
+        .raw_arg(format!("/select,\"{}\"", file.display()))
+        .spawn()
+        .map(drop)
 }
 
 #[cfg(test)]

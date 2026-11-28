@@ -1,24 +1,19 @@
-//! `redist.exe`: installs the Windows runtimes programs commonly ask for.
+//! `redist-cli.exe`: the console version of the installer, for CI and
+//! scripts. Users double-click `redist.exe`, the window.
 //!
 //! For now it reads the manifest from a local file, which is not signed:
 //! development builds only. Fetching the signed manifest comes in
 //! milestone 4.
 
-use std::fs;
 use std::io::{self, BufRead, Write};
-use std::path::Path;
-use std::process::Command;
 
+use redist::context::Context;
 use redist::{Args, USAGE, event_text, parse_args, summary_text};
 use redist_core::log::Log;
-use redist_core::manifest::{KnownFolder, Manifest};
-use redist_core::session::{Event, Options, Reporter, Session};
-use redist_core::windows::{
-    ProcessRunner, WinHttpFetcher, WindowsMachine, console_is_ours, create_work_dir,
-    known_folder_path,
-};
+use redist_core::session::{Event, Options, Reporter};
+use redist_core::windows::{console_is_ours, restart_windows};
 
-const NAME: &str = env!("CARGO_PKG_NAME");
+const NAME: &str = "redist-cli";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Exit codes.
@@ -54,69 +49,49 @@ fn main() {
 
 fn run(args: &Args) -> i32 {
     println!("{NAME} {VERSION}, development build: the manifest is not signed.\n");
-    let manifest = match fs::read(&args.manifest) {
-        Ok(bytes) => match Manifest::parse(&bytes) {
-            Ok(manifest) => manifest,
-            Err(error) => {
-                eprintln!("{}: {error}", args.manifest.display());
-                return USAGE_ERROR;
-            }
-        },
-        Err(error) => {
-            eprintln!("Could not read {}: {error}", args.manifest.display());
+    let manifest = match Context::read_manifest(&args.manifest) {
+        Ok(manifest) => manifest,
+        Err(message) => {
+            eprintln!("{message}");
             return USAGE_ERROR;
         }
     };
-
-    let prepared = (|| {
-        let machine = WindowsMachine::new()?;
-        let fetcher = WinHttpFetcher::new()?;
-        let work_dir = create_work_dir()?;
-        let log_path = work_dir.join(format!("{NAME}.log"));
-        let log = Log::create(&log_path)?;
-        io::Result::Ok((machine, fetcher, work_dir, log_path, log))
-    })();
-    let (machine, fetcher, work_dir, log_path, log) = match prepared {
-        Ok(prepared) => prepared,
+    let context = match Context::prepare(manifest, NAME, VERSION) {
+        Ok(context) => context,
         Err(error) => {
             eprintln!("Could not get started: {error}.");
             return FAILED;
         }
     };
-    log.line(format_args!(
-        "{NAME} {VERSION}; manifest {}; {args:?}",
-        args.manifest.display()
-    ));
+    context.log.line(format_args!("{args:?}"));
 
     println!("Checking what is installed...");
-    let session = Session {
-        machine: &machine,
-        fetcher: &fetcher,
-        runner: &ProcessRunner,
-        reporter: &Console,
-        log: &log,
-        work_dir: &work_dir,
-    };
     let options = Options {
         only: args.only.as_deref(),
         check_only: args.check,
     };
-    let result = session.run(&manifest, &options);
-    tidy(&work_dir, &log);
+    let result = context.session(&Console).run(&context.manifest, &options);
+    context.tidy();
 
     match result {
         Ok(summary) => {
-            println!("\n{}", summary_text(&manifest, &summary, args.check));
-            println!("The log is {}", log_path.display());
+            println!(
+                "\n{}",
+                summary_text(&context.manifest, &summary, args.check)
+            );
+            println!("The log is {}", context.log_path.display());
             if summary.restart_needed {
-                offer_restart(&log)
+                offer_restart(&context.log)
             } else {
                 OK
             }
         }
         Err(error) => {
-            log.line(format_args!("Stopped: {error}"));
-            eprintln!("\n{error}\nThe details are in {}", log_path.display());
+            context.log.line(format_args!("Stopped: {error}"));
+            eprintln!(
+                "\n{error}\nThe details are in {}",
+                context.log_path.display()
+            );
             FAILED
         }
     }
@@ -144,38 +119,11 @@ fn offer_restart(log: &Log) -> i32 {
         return RESTART_NEEDED;
     }
     log.line("Restarting Windows");
-    let restarted = known_folder_path(KnownFolder::System32).and_then(|system32| {
-        Command::new(system32.join("shutdown.exe"))
-            .args(["/r", "/t", "0"])
-            .status()
-    });
-    match restarted {
-        Ok(status) if status.success() => OK,
-        Ok(status) => {
-            eprintln!("Could not restart Windows ({status}). Restart it yourself to finish.");
-            RESTART_NEEDED
-        }
+    match restart_windows() {
+        Ok(()) => OK,
         Err(error) => {
             eprintln!("Could not restart Windows: {error}. Restart it yourself to finish.");
             RESTART_NEEDED
-        }
-    }
-}
-
-/// Deletes the downloads and unpacked installers; keeps the log and the
-/// installers' output.
-fn tidy(work_dir: &Path, log: &Log) {
-    let Ok(entries) = fs::read_dir(work_dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        if entry.file_type().is_ok_and(|kind| kind.is_dir())
-            && let Err(error) = fs::remove_dir_all(entry.path())
-        {
-            log.line(format_args!(
-                "Could not delete {}: {error}",
-                entry.path().display()
-            ));
         }
     }
 }

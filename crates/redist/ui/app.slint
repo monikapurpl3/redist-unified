@@ -1,0 +1,221 @@
+// The installer's window. It only draws: what each state shows is decided in
+// Rust (src/ui.rs), which has the tests. Light or dark follows Windows.
+
+import { Button, ListView, Palette, ProgressIndicator, Spinner } from "std-widgets.slint";
+
+export enum RowStatus { checking, present, missing, downloading, downloaded, installing, installed, restart, failed }
+
+export enum Phase { checking, ready, nothing, working, done, restart, failed }
+
+export struct RowData {
+    name: string,
+    status: RowStatus,
+    detail: string,
+    progress: float,
+}
+
+// A runtime's status: a spinner while busy, a ring while waiting, a check when
+// it is there, an exclamation mark when it failed.
+component StatusIcon {
+    in property <RowStatus> status;
+    in property <float> progress;
+    width: 24px;
+    height: 24px;
+
+    property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+    property <color> good: root.dark ? #6ccb5f : #0f7b0f;
+    property <color> bad: root.dark ? #ff99a4 : #c42b1c;
+    property <color> quiet: Palette.foreground.with-alpha(0.35);
+
+    if root.status == RowStatus.checking || root.status == RowStatus.installing: Spinner {
+        width: root.width;
+        height: root.height;
+        indeterminate: true;
+    }
+    if root.status == RowStatus.downloading: Spinner {
+        width: root.width;
+        height: root.height;
+        progress: root.progress;
+    }
+    if root.status == RowStatus.missing || root.status == RowStatus.downloaded: Rectangle {
+        width: root.width;
+        height: root.height;
+        border-radius: self.width / 2;
+        border-width: 2px;
+        border-color: root.status == RowStatus.downloaded ? Palette.accent-background : root.quiet;
+    }
+    // Already there: an outlined check. Installed now: a filled one.
+    if root.status == RowStatus.present || root.status == RowStatus.installed || root.status == RowStatus.restart: Rectangle {
+        width: root.width;
+        height: root.height;
+        border-radius: self.width / 2;
+        border-width: root.status == RowStatus.present ? 2px : 0px;
+        border-color: root.good;
+        background: root.status == RowStatus.present ? transparent : root.good;
+        Path {
+            width: parent.width;
+            height: parent.height;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: "M 7 12.5 L 10.5 16 L 17 9";
+            fill: transparent;
+            stroke: root.status == RowStatus.present ? root.good : Palette.background;
+            stroke-width: 2px;
+        }
+    }
+    if root.status == RowStatus.failed: Rectangle {
+        width: root.width;
+        height: root.height;
+        border-radius: self.width / 2;
+        background: root.bad;
+        Text {
+            text: "!";
+            color: Palette.background;
+            font-size: 15px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// One runtime: its status, its name, and what is happening to it.
+component RowItem inherits Rectangle {
+    in property <RowData> item;
+    height: 56px;
+    border-radius: 8px;
+    background: Palette.alternate-background;
+    accessible-role: list-item;
+    accessible-label: root.item.name + ", " + root.item.detail;
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 14px;
+        VerticalLayout {
+            alignment: center;
+            StatusIcon {
+                status: root.item.status;
+                progress: root.item.progress;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.item.name;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: root.item.detail;
+                font-size: 12px;
+                color: Palette.foreground.with-alpha(0.65);
+                overflow: elide;
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    in property <string> window-title: "Runtime Installer";
+    in property <Phase> phase: Phase.checking;
+    in property <string> headline: "Checking your PC";
+    in property <string> subline;
+    in property <float> progress;
+    in property <[RowData]> rows;
+    // False when the run could not start, so there is no log to open.
+    in property <bool> can-open-log: true;
+    // Only for screenshots; the real window follows Windows.
+    in property <ColorScheme> scheme-override: ColorScheme.unknown;
+
+    callback install();
+    callback restart();
+    callback dismiss();
+    callback open-log();
+
+    title: root.window-title;
+    preferred-width: 520px;
+    preferred-height: 620px;
+    min-width: 380px;
+    min-height: 440px;
+    background: Palette.background;
+    default-font-size: 14px;
+
+    changed scheme-override => {
+        Palette.color-scheme = root.scheme-override;
+    }
+
+    VerticalLayout {
+        padding: 28px;
+        padding-bottom: 22px;
+        spacing: 18px;
+
+        // Header and buttons keep their natural height; the list takes the
+        // rest. (An empty button row would otherwise grow and squash it.)
+        VerticalLayout {
+            spacing: 6px;
+            vertical-stretch: 0;
+            Text {
+                text: root.headline;
+                font-size: 24px;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.subline;
+                color: Palette.foreground.with-alpha(0.7);
+                wrap: word-wrap;
+            }
+        }
+
+        if root.phase == Phase.checking || root.phase == Phase.working: ProgressIndicator {
+            indeterminate: root.phase == Phase.checking;
+            progress: root.progress;
+        }
+
+        ListView {
+            vertical-stretch: 1;
+            for row in root.rows: VerticalLayout {
+                padding-bottom: 8px;
+                RowItem {
+                    item: row;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: 10px;
+            vertical-stretch: 0;
+            height: 32px;
+            if root.phase == Phase.ready: Button {
+                text: "Install";
+                primary: true;
+                clicked => {
+                    root.install();
+                }
+            }
+            if root.phase == Phase.restart: Button {
+                text: "Restart now";
+                primary: true;
+                clicked => {
+                    root.restart();
+                }
+            }
+            if root.phase == Phase.failed && root.can-open-log: Button {
+                text: "Open log";
+                clicked => {
+                    root.open-log();
+                }
+            }
+            if root.phase != Phase.checking && root.phase != Phase.working: Button {
+                text: root.phase == Phase.restart ? "Later" : root.phase == Phase.ready ? "Not now" : "Close";
+                clicked => {
+                    root.dismiss();
+                }
+            }
+        }
+    }
+}

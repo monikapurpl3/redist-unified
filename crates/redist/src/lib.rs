@@ -1,18 +1,42 @@
-//! The parts of `redist.exe` that have tests: the command line, and what it
-//! says.
+//! What the two exes share, and the parts of them that have tests.
 //!
-//! They live in this library because the exe carries a
-//! `requireAdministrator` manifest, so a test build of the exe itself could
-//! not run without elevation.
+//! - `redist.exe` is the window: [`app`] runs it, [`gui`] draws it from [`ui`].
+//! - `redist-cli.exe` is the console version, for CI and scripts. Its
+//!   command line and text are here.
+//!
+//! Both exes carry a `requireAdministrator` manifest, so test builds of the
+//! exes themselves could not run without elevation; hence this library.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use redist_core::manifest::Manifest;
 use redist_core::session::{BUSY_ATTEMPTS, BUSY_WAIT, Event, Outcome, Summary};
 
+#[cfg(windows)]
+pub mod app;
+#[cfg(windows)]
+pub mod context;
+pub mod gui;
+pub mod ui;
+
+/// Where the window takes its manifest from: `--manifest <file>`, or else
+/// `manifest.json` next to the exe. Both are unsigned, for development builds;
+/// the signed manifest comes in milestone 4.
+pub fn window_manifest(args: impl IntoIterator<Item = String>, exe: &Path) -> PathBuf {
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        if arg == "--manifest"
+            && let Some(file) = args.next()
+        {
+            return PathBuf::from(file);
+        }
+    }
+    exe.with_file_name("manifest.json")
+}
+
 /// What `--help` prints.
 pub const USAGE: &str = "\
-Usage: redist --manifest <file> [--only <component id>] [--check]
+Usage: redist-cli --manifest <file> [--only <component id>] [--check]
 
   --manifest <file>  the manifest to use (not signed: development builds only)
   --only <id>        install only this component
@@ -124,7 +148,26 @@ mod tests {
     use redist_core::manifest::Manifest;
     use redist_core::session::{Event, Outcome, Summary};
 
-    use super::{Args, event_text, parse_args, summary_text};
+    use super::{Args, event_text, parse_args, summary_text, window_manifest};
+
+    #[test]
+    fn the_window_finds_its_manifest() {
+        let exe = std::path::Path::new(r"C:\test\redist.exe");
+        let args = |list: &[&str]| list.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            window_manifest(args(&[]), exe),
+            PathBuf::from(r"C:\test\manifest.json")
+        );
+        assert_eq!(
+            window_manifest(args(&["--manifest", r"D:\m.json"]), exe),
+            PathBuf::from(r"D:\m.json")
+        );
+        // A dangling --manifest falls back to the default.
+        assert_eq!(
+            window_manifest(args(&["--manifest"]), exe),
+            PathBuf::from(r"C:\test\manifest.json")
+        );
+    }
 
     /// Two components, enough for the wording.
     fn manifest() -> Manifest {

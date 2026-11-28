@@ -12,11 +12,14 @@ part of the design.
 
 The milestones, in the maintainer's order:
 1. The manifest and detection library. Done.
-2. The CLI installer. Done, as far as CI can show. It is tested against fakes,
-   and on throwaway x64 and ARM64 runners it really installs from a real
-   manifest (below). Not yet seen for real: a VC++ v14 or .NET install (the
-   runners already have both), and an installer that asks for a restart.
-3. The UI.
+2. The CLI installer. Done. It is tested against fakes, and it really installs
+   from a real manifest (below) on throwaway x64 and ARM64 runners, and in a
+   throwaway container, where every component in it was missing. Not yet seen
+   for real: an installer that asks for a restart.
+3. The UI. In progress. The Slint window is built (see "The window" below). It
+   is tested through its logic, through screenshots drawn offscreen, and
+   through a safe demo. `redist.exe` has run for real once, downloaded from a
+   web page into Windows Sandbox (see "Local real installs").
 4. The signed manifest.
 5. The publish pipeline.
 6. CI and SignPath.
@@ -33,7 +36,8 @@ name contains a space.
 
 ```bash
 cargo build                                          # debug build
-cargo build --release --locked                       # target/release/redist.exe
+cargo build --release --locked                       # target/release/redist.exe and redist-cli.exe
+cargo build --release --locked --target aarch64-pc-windows-msvc   # the same for ARM64 (see below)
 cargo test --locked                                  # every crate
 cargo test -p redist-core <name>                     # tests whose name contains <name>
 cargo test -p redist-core --test manifest            # one integration test file
@@ -41,17 +45,27 @@ cargo test -p redist-core --lib windows              # the real Windows backend 
 cargo test -p redist-core --test download            # the download engine, against a fake server
 cargo test -p redist-core --lib -- --ignored         # real downloads from this repo on GitHub
 cargo run -p redist-core --example detect -- e2e/manifest.json   # what its rules find here (read-only)
+cargo run -p redist --example demo [-- --fail|--busy|--nothing] # the real window on a pretend machine
+cargo run -p redist --example demo -- --headless     # the same, in the console
+cargo run -p redist --example screenshots -- <folder> # every window state as PNG, offscreen
+cargo run -p redist --example icon [-- <folder>]     # assets/redist.ico from the SVGs (and PNGs)
+pwsh -File e2e/container-test.ps1                    # real installs in a throwaway container (elevated)
 cargo clippy --all-targets --locked -- -D warnings
 cargo fmt --check
 ```
 
-**Never start `redist.exe` on the development machine.** It requires
-administrator rights and installs runtimes, so test it in a throwaway Windows
-(see the Invariants).
+**Never start `redist.exe` or `redist-cli.exe` on the development machine.**
+Both require administrator rights and install runtimes, so test them in a
+throwaway Windows (see the Invariants). The `demo` and `screenshots` examples
+are the safe way to see the window here.
 - From an unelevated shell, `cargo run` fails with "requires elevation"
   (os error 740).
 - From PowerShell, even `redist.exe --help` raises a UAC prompt, because
   PowerShell hands programs that need elevation to the Windows shell.
+- **From an elevated shell nothing stops them.** `cargo run -p redist`, or
+  starting either exe, installs runtimes on the development machine at once,
+  with no prompt. So never `cargo run` the exes, elevated or not. The
+  examples, the tests and `e2e/container-test.ps1` stay safe when elevated.
 - To check the exe without running it, read its manifest with `mt.exe`
   (Windows SDK):
 
@@ -59,17 +73,27 @@ administrator rights and installs runtimes, so test it in a throwaway Windows
   mt.exe -nologo -inputresource:target\release\redist.exe;#1 -out:redist.manifest
   ```
 
+**Building for ARM64 needs Visual Studio's ARM64 build tools**, the
+component "MSVC Build Tools for ARM64/ARM64EC"
+(`Microsoft.VisualStudio.Component.VC.Tools.ARM64`), in the toolset Rust
+uses. Without it Rust finds no ARM64 `link.exe` and falls back to whatever
+`link` is on PATH (Git Bash's fails with "extra operand"). The x64 libraries'
+`lib\arm64` folder alone is not enough: it lacks the C runtime.
+
 Keep the build free of warnings. Cargo warns about unused dependencies,
 including unused `[workspace.dependencies]` entries, so add a dependency in the
 same change as the code that uses it.
 
 **Check the static CRT after changing the build setup.** Run
-`dumpbin -nologo -dependents target/release/redist.exe`. The client must not
-import `VCRUNTIME140.dll` or any `api-ms-win-crt-*` DLL, because installing
-those is its job. Only DLLs that are part of Windows are expected: `kernel32`,
-`ntdll`, `advapi32`, `shell32`, `combase`, `version`, `winhttp`,
-`bcryptprimitives` and the `api-ms-win-core-*` API sets. A build without
-`+crt-static` lists the CRT DLLs.
+`dumpbin -nologo -dependents` on both exes. They must not import
+`VCRUNTIME140.dll` or any `api-ms-win-crt-*` DLL, because installing those is
+their job. Only DLLs that are part of Windows are expected:
+- in both: `kernel32`, `ntdll`, `advapi32`, `shell32`, `combase`, `version`,
+  `winhttp`, `bcryptprimitives` and the `api-ms-win-core-*` API sets;
+- in the window also: `user32`, `gdi32`, `dwmapi`, `uxtheme`, `imm32`,
+  `comctl32`, `dwrite`, `uiautomationcore`, `ole32`, `oleaut32` and `shlwapi`.
+
+A build without `+crt-static` lists the CRT DLLs. CI checks all of this.
 
 ## What is being built
 
@@ -114,16 +138,23 @@ The client never carries on and reports success.
 
 - `crates/redist-core` is the library: manifest, detection, and the install
   session. It is the real product.
-- `crates/redist` is the thin binary (CLI, later the UI) that builds
-  `redist.exe`.
-  - `src/lib.rs` holds what has tests: the command line, and every line of text
-    it prints.
-  - `src/main.rs` wires up the Windows pieces.
-  - For now `--manifest <file>` reads an unsigned local manifest, for
-    development only. `--only <id>` installs one component, and `--check`
-    only detects.
-  - Exit codes: 0, 1 (failure), 2 (usage or manifest error), and 3010 (a
-    restart is still needed).
+- `crates/redist` builds the two exes. Its library holds everything with
+  tests.
+  - **`redist.exe` is the window**, what users double-click (`src/main.rs`,
+    a GUI-subsystem program). See "The window" below. It takes
+    `--manifest <file>`, or else `manifest.json` next to the exe; both are
+    unsigned, for development only.
+  - **`redist-cli.exe` is the console version**, for CI and scripts
+    (`src/bin/redist-cli.rs`).
+    - For now `--manifest <file>` reads an unsigned local manifest, for
+      development only. `--only <id>` installs one component, and `--check`
+      only detects.
+    - Exit codes: 0, 1 (failure), 2 (usage or manifest error), and 3010 (a
+      restart is still needed).
+    - Its command line and every line of text it prints are in `src/lib.rs`.
+  - **`src/context.rs`** is what both set up before a run. It holds the
+    machine, downloader, runner and restart as trait objects, so the demo can
+    swap in stand-ins.
 - The repository is called `redist-unified`. The crate and exe names are
   working names and have not been renamed to match.
 - `.cargo/config.toml` sets `+crt-static` for `x86_64-pc-windows-msvc` (the
@@ -131,9 +162,10 @@ The client never carries on and reports success.
 - **Application manifests.** `crates/redist/build.rs` embeds
   `requireAdministrator` plus `crates/redist-core/windows-compat.manifest` (the
   Windows 10/11 `supportedOS` GUID) through `rustc-link-arg-bins`.
-  - That link argument also reaches the binary's own test build, which then
-    cannot run unelevated. So the `[[bin]]` has `test = false`, and its tested
-    code lives in the crate's library.
+  - That link argument also reaches the exes' own test builds, which then
+    cannot run unelevated. So both `[[bin]]`s have `test = false`, and their
+    tested code lives in the crate's library. Examples are not reached: they
+    run unelevated.
   - `crates/redist-core/build.rs` embeds the compatibility manifest alone
     (`asInvoker`) in the library's tests and examples. They see Windows as the
     client does, without elevation.
@@ -323,21 +355,89 @@ The Windows backend lives in `src/windows/`:
     label.
   - So no unelevated program can swap a checked installer or plant a DLL next
     to it. `workdir.rs` explains why.
-  - The CLI deletes its subfolders at the end, and keeps the log and the
+  - Both exes delete its subfolders at the end, and keep the log and the
     installers' output.
 
-## CI and the e2e manifest
+### The window
+
+The window is built with **Slint 1.19** (the maintainer's choice). The brief:
+cozy and modern, yet responsive and minimalistic. Its text is English for now;
+every line is in `src/ui.rs`, so translations can come later.
+- **Files:**
+  - `ui/app.slint` draws it, compiled by `build.rs`.
+  - `src/ui.rs` (`UiModel`) decides everything it shows, and has the tests:
+    rows, phase, headline, sentence, progress.
+  - `src/gui.rs` copies a `UiModel` into the window.
+  - `src/app.rs` runs it.
+- **The flow:**
+  1. It checks right away.
+  2. It shows what is missing, with one **Install** button and **Not now**.
+  3. Then it shows progress.
+  4. Then **All done**, or **Restart now / Later**, or **Something went
+     wrong** with **Open log**.
+- **The icon** is the maintainer's design: a soft white cross and a green
+  one, on a rounded black square.
+  - `assets/icon.svg` is the drawing, and `assets/icon-16.svg` its redraw on
+    the 16 px grid. `cargo run -p redist --example icon` renders both with
+    `resvg` (Slint's own SVG renderer) into `assets/redist.ico`: 16 px from
+    the small drawing, 20 to 256 px from the main one. It reproduces byte
+    for byte, and `*.ico` is binary in `.gitattributes`.
+  - `build.rs` turns the `.ico` into a compiled resource (`.res`) itself, so
+    no resource compiler is needed; `link.exe` takes `.res` files as inputs.
+    It is icon resource 1 in both exes and in the examples, so the demo has
+    it too.
+  - `app.rs` loads it into the title bar (16 logical px) and the taskbar
+    (32) at the window's scale, through winit (Slint's `unstable-winit-030`
+    feature, tied to the Slint version). Slint's own `icon` property would
+    give both one 64 px picture. Seen working: at 150 % the demo window
+    carries 24 and 48 px icons, and Windows extracts it as both exes' icon.
+- **Responsive.** Worker threads run the session and only update a shared
+  `UiModel`. A timer copies it into the window every 80 ms, and only when it
+  changed. Closing the window is refused while an install runs.
+- **Rendering.** Slint draws on the CPU (`renderer-software`), so the window
+  works on old PCs, in remote sessions and in Sandbox, where GPU drawing can
+  fail. The style is `fluent`, which follows Windows' light or dark mode.
+- **Size.** `redist.exe` is about 12.4 MB; `redist-cli.exe` is 0.8 MB.
+  - Most of the size is Slint's winit backend, which switches on image and
+    SVG decoding itself.
+  - Optimising for size (`opt-level` "s" or "z") only gives 10.4 or 9.6 MB, at
+    the cost of drawing speed, so it is not used.
+- **Gotchas:**
+  - `row` is a built-in layout property and `close` a built-in window
+    function, so the code uses `item` and `dismiss`.
+  - The header and the button row have `vertical-stretch: 0`. Without it, an
+    empty button row (while working) grows and squashes the list.
+  - Fluent buttons keep some colours when the colour scheme switches in a
+    running window. The real window does not switch, so the screenshot tool
+    makes a fresh window for every picture.
+- **Seeing it without elevation:**
+  - The `screenshots` example draws every state, light and dark, into PNG
+    files, offscreen. CI uploads them as `screenshots`.
+  - The `demo` example runs the real window and the real session on a pretend
+    machine: generated downloads with real hashes, throttled so the progress
+    shows, installers that take two and a half seconds, and a restart that
+    only closes the window.
+    - It touches no registry, system file or network, and needs no elevation.
+    - Its scenarios are `--fail`, `--busy` and `--nothing`; `--headless`
+      runs it in the console, as CI does.
+
+## Testing for real
+
+### CI
 
 `.github/workflows/ci.yml` runs on every push to `main` and on pull requests.
 - **Build and test**, on `windows-2025`:
   - fmt, clippy, every test, and the network tests;
   - release builds for x64 and ARM64;
-  - a check that neither exe imports the VC++ runtime, and that both ask for
-    administrator rights.
-- **Install**, on `windows-2025` (x64) and `windows-11-arm` (ARM64):
-  1. `redist.exe --check`
-  2. `redist.exe`
-  3. `redist.exe --check`, which must say "Nothing is missing."
+  - a check that neither exe imports the VC++ runtime, that both ask for
+    administrator rights, and that `redist.exe` is a GUI program while
+    `redist-cli.exe` is a console one;
+  - the window's screenshots, and the demo run headless.
+- **Install**, on `windows-2025` (x64) and `windows-11-arm` (ARM64), with the
+  console exe (the window would wait for a click):
+  1. `redist-cli.exe --check`
+  2. `redist-cli.exe`
+  3. `redist-cli.exe --check`, which must say "Nothing is missing."
 
   The runners already have some runtimes, so this covers both real installs
   and leaving alone what is there. Exit code 3010 skips the last check, since
@@ -358,6 +458,58 @@ The Windows backend lives in `src/windows/`:
 - **Parts run in parallel,** so the order of requests in the download tests
   varies. Assert on sorted ranges, or on the order requests really came in,
   never on a sorted list's last element.
+
+### Local real installs
+
+- **`e2e/container-test.ps1`** runs `redist-cli.exe` with `e2e/manifest.json`
+  in a throwaway Windows container: check, install, check.
+  - It uses containerd and `nerdctl` with Hyper-V isolation, so the image's
+    Windows build need not match the host's. It needs an elevated PowerShell.
+  - Nothing is installed on the host. The output and the work folders' logs
+    land in `target\container-test\out`.
+  - The default image, `windows/server:ltsc2025`, has the full Windows API,
+    DirectX included. Server Core is about half the size but lacks parts of
+    DirectX. Nano Server has no WoW64 and no MSI.
+  - A container has no desktop, so it cannot show the window.
+  - **Networking.** The script makes a NAT network of nerdctl's own,
+    `redist-test`, with its config in its own folder
+    (`%ProgramData%\redist-unified-test\cni\conf`). containerd's install
+    script leaves a single-plugin `0-containerd-nat.conf` in the default
+    folder, and nerdctl 2.4.2 crashes on it (index out of range in
+    `verifyNetworkTypes` and in `network create`).
+  - **The first run** (2026-11-25), Windows Server 2025 (build 26100) under
+    Hyper-V isolation: all seven x64 and x86 components were missing. All seven
+    downloaded in 4 seconds, installed with exit code 0 and passed detection
+    right after, and the last check said "Nothing is missing." That was the
+    first real install of VC++ v14 and .NET 11, which the runners already have.
+- **The window, downloaded like a user would** (2026-11-25, Windows
+  Sandbox): `redist.exe` and `manifest.json` were
+  downloaded with Edge from an unlisted test URL, and `redist.exe` started
+  with a double-click.
+  - Edge's own SmartScreen check stopped the download: "Make sure you trust
+    redist.exe before you open it … isn't commonly downloaded … Publisher:
+    Unknown", with **Delete** as the main button and keeping the file in its
+    menu. Every user of an unsigned build will meet this; signing fixes the
+    publisher line, and reputation comes only with time.
+  - Windows SmartScreen showed no dialog: the window started a second after
+    the double-click. That is not conclusive. Sandbox runs with UAC off
+    (`EnableLUA` 0) and Defender's service stopped. And although Edge saved
+    both files straight to the Desktop, only `manifest.json` still carried
+    its download mark afterwards; the exe had none. That is unexplained.
+  - UAC cannot be tested in Sandbox at all, for the same reason.
+  - The window found 7 missing, downloaded them in 5 seconds, installed each
+    with exit code 0 and showed "All done", about 55 seconds in all.
+- **ARM64** runs in an emulated Windows 11 IoT Enterprise LTSC in QEMU, set up
+  unattended and reached over SSH. Each run gets a throwaway overlay of the
+  base disk. Emulation is slow. Its scripts and details are local
+  (`PRIVATE.md`).
+  - The new 24H2 Setup stalls under emulation before it touches the disk, so
+    the image is applied by hand from WinPE (`diskpart`, `dism`, `bcdboot`),
+    with the unattend file as `Windows\Panther\unattend.xml`.
+  - The network is `virtio-net` with Red Hat's signed NetKVM driver. Windows
+    binds QEMU's `usb-net` to its serial driver, a COM port.
+
+### The e2e manifest
 
 `e2e/manifest.json` is real data:
 - **What it holds:**
@@ -396,10 +548,14 @@ The Windows backend lives in `src/windows/`:
 - Exe signing happens only in GitHub Actions through SignPath Foundation. Local
   builds are unsigned dev builds.
 - The installer requires administrator rights and changes the system. Test it
-  only in a throwaway Windows, never on a development machine, and never in
-  a VM: the maintainer does not want to maintain VMs (2026-11-24). Real installs
-  run on GitHub Actions' Windows runners (x64 and ARM64), which are discarded
-  after every job. Windows Sandbox can serve for local, by-hand checks.
+  only in a throwaway Windows, never on a development machine (see "Local real
+  installs"):
+  - GitHub Actions' Windows runners (x64 and ARM64), discarded after every job;
+  - locally, a Windows container first (the maintainer's preference,
+    2026-11-25), and Windows Sandbox for checks by hand;
+  - for ARM64, one emulated Windows 11 in QEMU, whose base disk no test run
+    changes. It is the only VM, because local ARM64 cannot be had otherwise.
+    The maintainer wants no other VMs.
 - Publishing anything (a release, the manifest) needs the maintainer's explicit
   yes, every time.
 
@@ -418,6 +574,12 @@ AGPL's network clause would do nothing for a desktop installer.
 
 Dependencies must be GPLv3-compatible. MIT, Apache-2.0, BSD, ISC, Zlib,
 MPL-2.0 and Unicode-3.0 are fine.
+- **Slint is used under its GPL-3.0-only option** (it is also offered
+  royalty-free or commercially). So a built `redist.exe` is effectively
+  distributed under GPL-3.0 only. The project's own source stays
+  GPL-3.0-or-later.
+- On 2026-11-24 every crate built for Windows (327 of them) had a
+  GPLv3-compatible licence option. Recheck after adding dependencies.
 
 ## Open questions
 

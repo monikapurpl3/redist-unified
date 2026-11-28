@@ -52,28 +52,51 @@ jobs:
           cargo build --release --locked --target aarch64-pc-windows-msvc
 
       - name: Check the exes
-        # No VC++ runtime imports (installing it is the client's job), and a
-        # manifest that asks for administrator rights.
+        # No VC++ runtime imports (installing it is the client's job), a
+        # manifest that asks for administrator rights, and the right
+        # subsystem: redist.exe is the window, redist-cli.exe the console.
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $dumpbin = & $vswhere -latest -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
           $failed = $false
           foreach ($target in 'x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc') {
-            $exe = "target\$target\release\redist.exe"
-            $imports = & $dumpbin -nologo -dependents $exe | Select-String '\.dll' | ForEach-Object { $_.Line.Trim() }
-            "${target}: $($imports -join ', ')"
-            if ($imports -match 'vcruntime|api-ms-win-crt') { "::error::$exe imports the VC++ runtime"; $failed = $true }
-            $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($exe))
-            if (-not $text.Contains("level=""requireAdministrator""")) { "::error::$exe does not ask for administrator rights"; $failed = $true }
+            foreach ($exe, $subsystem in @('redist', 'Windows GUI'), @('redist-cli', 'Windows CUI')) {
+              $path = "target\$target\release\$exe.exe"
+              $imports = & $dumpbin -nologo -dependents $path | Select-String '\.dll' | ForEach-Object { $_.Line.Trim() }
+              "${target} ${exe}.exe, $((Get-Item $path).Length) bytes: $($imports -join ', ')"
+              if ($imports -match 'vcruntime|api-ms-win-crt') { "::error::$path imports the VC++ runtime"; $failed = $true }
+              $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($path))
+              if (-not $text.Contains("level=""requireAdministrator""")) { "::error::$path does not ask for administrator rights"; $failed = $true }
+              if (-not (& $dumpbin -nologo -headers $path | Select-String "subsystem \($subsystem\)" -Quiet)) { "::error::$path is not a $subsystem program"; $failed = $true }
+            }
           }
           if ($failed) { exit 1 }
+
+      - name: Screenshots of the window
+        # Every state, light and dark, drawn without opening a window.
+        run: cargo run --release --locked -p redist --example screenshots -- screenshots
+
+      - name: The demo still works
+        # The demo's pretend machine, through the real session, without a
+        # window. It touches nothing on the runner.
+        run: |
+          cargo run --release --locked -p redist --example demo -- --headless | Tee-Object demo.txt
+          if (-not (Select-String -Path demo.txt -SimpleMatch 'Installed: ' -Quiet)) { exit 1 }
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: screenshots
+          path: screenshots
+          if-no-files-found: error
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: redist
           path: |
             target/x86_64-pc-windows-msvc/release/redist.exe
+            target/x86_64-pc-windows-msvc/release/redist-cli.exe
             target/aarch64-pc-windows-msvc/release/redist.exe
+            target/aarch64-pc-windows-msvc/release/redist-cli.exe
           if-no-files-found: error
 
   install:
@@ -107,7 +130,7 @@ jobs:
 
       - name: What is missing
         run: |
-          & "build\${{ matrix.target }}\release\redist.exe" --manifest e2e\manifest.json --check | Tee-Object before.txt
+          & "build\${{ matrix.target }}\release\redist-cli.exe" --manifest e2e\manifest.json --check | Tee-Object before.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install
@@ -115,7 +138,7 @@ jobs:
         # Exit code 3010 means installed, with a restart still to come. The
         # restart question reads an empty answer here, so nothing restarts.
         run: |
-          & "build\${{ matrix.target }}\release\redist.exe" --manifest e2e\manifest.json | Tee-Object install.txt
+          & "build\${{ matrix.target }}\release\redist-cli.exe" --manifest e2e\manifest.json | Tee-Object install.txt
           $code = $LASTEXITCODE
           "exit code: $code"
           "restart=$($code -eq 3010)" >> $env:GITHUB_OUTPUT
@@ -125,7 +148,7 @@ jobs:
       - name: Nothing is missing now
         if: steps.install.outputs.restart != 'True'
         run: |
-          & "build\${{ matrix.target }}\release\redist.exe" --manifest e2e\manifest.json --check | Tee-Object after.txt
+          & "build\${{ matrix.target }}\release\redist-cli.exe" --manifest e2e\manifest.json --check | Tee-Object after.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Select-String -Path after.txt -SimpleMatch 'Nothing is missing.' -Quiet)) {
             "::error::Something is still missing after installing"

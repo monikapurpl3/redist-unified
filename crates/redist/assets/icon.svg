@@ -1,0 +1,21 @@
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+ <!-- The app's icon: a soft white cross and a green one, on black.
+      The maintainer's drawing; only the rounded square and the move that
+      centres it (translate) were added. icon-16.svg is its 16 px version.
+      The icon example in crates/redist/examples makes redist.ico from both. -->
+ <defs>
+  <filter height="200%" width="200%" y="-50%" x="-50%" id="svg_7_blur">
+   <feGaussianBlur stdDeviation="2.1" in="SourceGraphic"/>
+  </filter>
+  <filter id="svg_9_blur">
+   <feGaussianBlur stdDeviation="0.2" in="SourceGraphic"/>
+  </filter>
+ </defs>
+ <rect width="200" height="200" rx="40" fill="#000"/>
+ <g transform="translate(5 10.5)">
+  <rect filter="url(#svg_7_blur)" rx="10" id="svg_6" height="123" width="19" y="5.25316" x="63.21519" stroke="#000" fill="#fff"/>
+  <rect filter="url(#svg_7_blur)" transform="rotate(90 72.7152 66.7532)" rx="10" id="svg_7" height="123" width="19" y="5.25316" x="63.21519" stroke="#000" fill="#fff"/>
+  <rect filter="url(#svg_9_blur)" rx="10" id="svg_8" height="123" width="19" y="56.89873" x="114.35443" stroke="#000" fill="#007f3f"/>
+  <rect transform="rotate(90 123.854 118.399)" rx="10" id="svg_9" height="123" width="19" y="56.89873" x="114.35443" stroke="#000" fill="#007f3f"/>
+ </g>
+</svg>

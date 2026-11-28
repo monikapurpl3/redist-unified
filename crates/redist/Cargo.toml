@@ -10,10 +10,34 @@ publish.workspace = true
 
 [dependencies]
 redist-core = { path = "../redist-core" }
+# The software renderer draws on the CPU, so the window works on old PCs,
+# in remote sessions and in Windows Sandbox, where GPU drawing can fail.
+# unstable-winit-030 reaches winit, to load the window's icon from the exe at
+# the sizes Windows wants (app.rs); it is tied to this Slint version.
+slint = { version = "1.19.1", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "accessibility", "unstable-winit-030"] }
 
-# The exe requires administrator rights (build.rs), so its own test build
-# could not run unelevated. Its tested parts are in the library (src/lib.rs).
+[build-dependencies]
+slint-build = "1.19.1"
+
+[dev-dependencies]
+# For the examples: PNG files for screenshots and the icon, hashes for the
+# demo, and the icon's drawings rendered (resvg is Slint's own SVG renderer).
+png = "0.18.1"
+resvg = { version = "0.49.0", default-features = false }
+sha2 = "0.11.1"
+
+# Both exes require administrator rights (build.rs), so their own test builds
+# could not run unelevated. Their tested parts are in the library
+# (src/lib.rs).
+
+# The window: what users double-click.
 [[bin]]
 name = "redist"
 path = "src/main.rs"
+test = false
+
+# The console version, for CI and scripts.
+[[bin]]
+name = "redist-cli"
+path = "src/bin/redist-cli.rs"
 test = false

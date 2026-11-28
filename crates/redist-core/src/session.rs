@@ -208,6 +208,24 @@ impl fmt::Display for SessionError {
     }
 }
 
+impl SessionError {
+    /// The name of the component the error is about, if it is about one.
+    pub fn component_name(&self) -> Option<&str> {
+        match self {
+            SessionError::Detect { name, .. }
+            | SessionError::Download { name, .. }
+            | SessionError::HashMismatch { name, .. }
+            | SessionError::Start { name, .. }
+            | SessionError::Failed { name, .. }
+            | SessionError::Busy { name }
+            | SessionError::StillMissing { name } => Some(name),
+            SessionError::UnknownComponent(_)
+            | SessionError::NotForThisMachine(_)
+            | SessionError::WorkFolder(_) => None,
+        }
+    }
+}
+
 impl std::error::Error for SessionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
